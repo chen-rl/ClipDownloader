@@ -75,7 +75,9 @@ data class ParsedMedia(
     /** 该视频的可选清晰度（按高度降序，首选=第一档=videoUrl）；图片/音乐为空 */
     val qualities: List<MediaQuality> = emptyList(),
     /** 单直链媒体的体积（无画质档时用，探测补齐），未知为 0 */
-    val sizeBytes: Long = 0
+    val sizeBytes: Long = 0,
+    /** 作品发布时间（毫秒时间戳），未知为 0。同一作品的多个媒体（图集各张、实况图的图与视频）共用 */
+    val publishTimeMs: Long = 0
 )
 
 data class DownloadResult(

@@ -2,6 +2,7 @@ package com.clipdownloader.download
 
 import com.clipdownloader.model.ParsedMedia
 import com.clipdownloader.model.Platform
+import com.clipdownloader.model.PublishTime
 import com.clipdownloader.util.LogFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -94,7 +95,10 @@ class BilibiliUserParser {
                             author = v.optString("author"),
                             coverUrl = v.optString("pic").takeIf { it.startsWith("http") },
                             rawShareText = "https://www.bilibili.com/video/${v.optString("bvid")}",
-                            originalUrl = "https://www.bilibili.com/video/${v.optString("bvid")}"
+                            originalUrl = "https://www.bilibili.com/video/${v.optString("bvid")}",
+                            // 投稿列表每条的 created 是稿件发布时间戳（秒），与视频详情接口的 pubdate 相等
+                            // （ctime 是投稿创建时间，定时发布的稿件两者不同；列表接口不返回 ctime / pubdate）
+                            publishTimeMs = PublishTime.toMillis(v.optLong("created", 0L))
                         )
                     )
                 }

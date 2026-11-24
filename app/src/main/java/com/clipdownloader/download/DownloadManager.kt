@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import com.clipdownloader.util.LogFile
 import androidx.core.app.NotificationCompat
+import androidx.exifinterface.media.ExifInterface
 import com.clipdownloader.App
 import com.clipdownloader.DownloadResultActivity
 import com.clipdownloader.R
@@ -19,6 +20,7 @@ import com.clipdownloader.model.DownloadRecord
 import com.clipdownloader.model.DownloadResult
 import com.clipdownloader.model.ParsedMedia
 import com.clipdownloader.model.Platform
+import com.clipdownloader.model.PublishTime
 import com.clipdownloader.util.DownloadRecordStore
 import com.clipdownloader.util.PreferencesManager
 import com.clipdownloader.util.supportsPlatform
@@ -63,6 +65,9 @@ class DownloadManager private constructor(
     companion object {
         private const val TAG = "DownloadManager"
 private const val LINE_BREAK = "\n"
+
+        /** ExifInterface 支持写入 EXIF 的图片格式（GIF / HEIC 只能改文件时间） */
+        private val EXIF_WRITABLE_IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp")
 
         private val notificationIdSeq = AtomicInteger(2000)
 
@@ -382,6 +387,7 @@ private const val LINE_BREAK = "\n"
             batch.currentDuration = media.duration
             batch.itemKinds.add(batch.currentKind)
             batch.itemDurations.add(media.duration)
+            batch.itemPublishTimes.add(media.publishTimeMs)
             batch.itemSizes.add(0L)
             batch.itemSkipped.add(false)
             // 路径列表始终按解析条目占位，不能只在完成后 append；否则前面失败时，
@@ -553,6 +559,8 @@ private const val LINE_BREAK = "\n"
                 durationMs = batch.firstDuration,
                 kinds = batch.itemKinds.toList(),
                 durations = batch.itemDurations.toList(),
+                publishTimeMs = batch.itemPublishTimes.firstOrNull() ?: 0L,
+                publishTimes = batch.itemPublishTimes.toList(),
                 sizes = batch.itemSizes.toList(),
                 filePaths = batch.itemPaths.toList(),
                 itemSkipped = batch.itemSkipped.toList(),
@@ -1091,7 +1099,8 @@ private const val LINE_BREAK = "\n"
                 attempted++
                 if (media.isNotEmpty()) {
                     pending.remove(item)
-                    results.addAll(media)
+                    // 二次解析（云端通道）不回传发布时间：沿用作品列表条目带来的，替换时不能丢
+                    results.addAll(media.map { if (it.publishTimeMs > 0) it else it.copy(publishTimeMs = item.publishTimeMs) })
                     okCount++
                     roundProgress++
                     // 正常间隔：给目标服务留出喘息，也避免瞬间并发触发风控
@@ -1180,6 +1189,7 @@ private const val LINE_BREAK = "\n"
         if (videoOk) {
             val videoFile = uniqueFile(dir, buildFileName(media, index, total, "mp4", suffix = "_live"))
             if (moveFile(tmpVideo, videoFile)) {
+                stampPublishTime(videoFile, media)
                 scanFile(videoFile)
                 LogFile.d(TAG, "实况图[$index] 视频已保存: ${videoFile.name}")
                 if (savedPath == null) {
@@ -1199,6 +1209,7 @@ private const val LINE_BREAK = "\n"
             val ext = guessImageExt(coverUrl, tmpCover)
             val imgFile = uniqueFile(dir, buildFileName(media, index, total, ext, suffix = "_live"))
             if (moveFile(tmpCover, imgFile)) {
+                stampPublishTime(imgFile, media)
                 scanFile(imgFile)
                 LogFile.d(TAG, "实况图[$index] 图片已保存: ${imgFile.name}")
                 if (savedPath == null) {
@@ -1263,6 +1274,7 @@ private const val LINE_BREAK = "\n"
         }
         val mp4File = uniqueFile(dir, buildFileName(media, index, total, ext, suffix = suffix))
         return if (moveFile(tmp, mp4File)) {
+            stampPublishTime(mp4File, media)
             scanFile(mp4File)
             DownloadResult(
                 success = true,
@@ -1365,6 +1377,7 @@ private const val LINE_BREAK = "\n"
 
         val imgFile = uniqueFile(dir, buildFileName(media, index, total, guessImageExt(url, tmp)))
         return if (moveFile(tmp, imgFile)) {
+            stampPublishTime(imgFile, media)
             scanFile(imgFile)
             DownloadResult(
                 success = true,
@@ -1708,8 +1721,10 @@ private const val LINE_BREAK = "\n"
         val base = sanitize(media.title).take(40).ifBlank { media.platform.folderName }
         val idx = if (total > 1) "_${index + 1}" else ""
         // 文件名内置作品标识 _m<hash>_（同作品从任何入口下载标识一致），
-        // 时间戳每次不同没关系，本地已有识别只看标识
-        return "$base$idx" + "_m${workMarkerOf(media)}" + "_$ts$suffix.$ext"
+        // 时间戳每次不同没关系，本地已有识别只看标识。
+        // 最前面的 yyyyMMdd_ 是作品发布日期（未知则不加）：按文件名排序即按发布时间排序
+        return PublishTime.filePrefix(media.publishTimeMs) +
+            "$base$idx" + "_m${workMarkerOf(media)}" + "_$ts$suffix.$ext"
     }
 
     private fun sanitize(name: String): String =
@@ -1767,6 +1782,42 @@ private const val LINE_BREAK = "\n"
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * 把作品发布时间写到落盘文件上，让相册 / 文件管理器按发布日期归档排序：
+     * - 文件修改时间设为发布时间（图片、视频、音频都做；媒体库对没有拍摄时间的视频
+     *   就取文件时间作为「拍摄时间」）；
+     * - 图片再写入 EXIF 拍摄时间（DateTimeOriginal），文件被复制到别处后日期仍在。
+     * 视频不改写 MP4 元数据（需要重新封装，另议）。发布时间未知的文件原样不动。
+     *
+     * 必须在 [scanFile] 之前调用：媒体库按 EXIF / 文件时间确定「拍摄时间」。
+     * 任何失败都不影响已落盘的文件本身。
+     */
+    private fun stampPublishTime(file: File, media: ParsedMedia) {
+        val ms = media.publishTimeMs
+        if (ms <= 0) return
+        // 两步互相独立：EXIF 写不进去（个别格式不支持）不能连文件时间也不设
+        try {
+            if (file.extension.lowercase() in EXIF_WRITABLE_IMAGE_EXTS) writeExifTakenTime(file, ms)
+        } catch (e: Exception) {
+            LogFile.w(TAG, "写入图片拍摄时间失败（不影响文件）: ${e.javaClass.simpleName}: ${e.message}")
+        }
+        try {
+            if (!file.setLastModified(ms)) LogFile.w(TAG, "设置文件修改时间失败: ${file.name}")
+        } catch (e: Exception) {
+            LogFile.w(TAG, "设置文件修改时间失败（不影响文件）: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    /** 把时间写进图片 EXIF 的拍摄 / 数字化 / 修改三个日期字段；格式不支持会抛异常，由调用方忽略 */
+    private fun writeExifTakenTime(file: File, ms: Long) {
+        val exif = ExifInterface(file.absolutePath)
+        val stamp = PublishTime.exifStamp(ms)
+        exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, stamp)
+        exif.setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, stamp)
+        exif.setAttribute(ExifInterface.TAG_DATETIME, stamp)
+        exif.saveAttributes()
     }
 
     private fun scanFile(file: File) {

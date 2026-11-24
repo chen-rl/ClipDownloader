@@ -3,6 +3,7 @@ package com.clipdownloader.download
 import com.clipdownloader.model.MediaQuality
 import com.clipdownloader.model.ParsedMedia
 import com.clipdownloader.model.Platform
+import com.clipdownloader.model.PublishTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -79,7 +80,8 @@ class BilibiliParser {
                 duration = mediaInfo.optLong("duration", 0),
                 rawShareText = shareText,
                 // 重要：B站 CDN 校验 Referer，必须是 bilibili.com 根域（用 b23.tv 短链或 video/BVxxx 完整路径都可能 403）
-                originalUrl = "https://www.bilibili.com"
+                originalUrl = "https://www.bilibili.com",
+                publishTimeMs = PublishTime.toMillis(mediaInfo.optLong("pubdate", 0L))
             )
         } catch (e: Exception) {
             com.clipdownloader.util.LogFile.e("BilibiliParser", "解析异常", e)
@@ -139,6 +141,8 @@ class BilibiliParser {
             val cover = data.optString("pic", "")
             val duration = data.optLong("duration", 0) * 1000 // 秒→毫秒
             val author = data.optJSONObject("owner")?.optString("name") ?: ""
+            // 稿件发布时间（秒）；ctime 是投稿创建时间，定时发布时两者不同，以 pubdate 为准
+            val pubdate = data.optLong("pubdate", 0L)
 
             com.clipdownloader.util.LogFile.d("BilibiliParser", "view OK: cid=$cid, aid=$aid, title=$title")
 
@@ -234,6 +238,7 @@ class BilibiliParser {
                 put("title", title)
                 put("author", author)
                 put("duration", duration)
+                put("pubdate", pubdate)
                 put("cid", cid)
                 put("aid", aid)
                 put("qualities", qualitiesJson)

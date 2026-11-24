@@ -72,6 +72,9 @@ class DownloadBatchState(
     /** 首个条目的平台作品 ID（BV 号/aweme_id 等，记录归档用） */
     @Volatile var workId: String = ""
 
+    /** 每个条目对应作品的发布时间（毫秒，0=未知；下载循环追加，与缩略图一一对应） */
+    val itemPublishTimes = java.util.concurrent.CopyOnWriteArrayList<Long>()
+
     /** 本批各条目的作品标识（文件名内嵌 _m<hash>_，跳过下载时同作品旧记录替换判断用） */
     val workMarkers = java.util.concurrent.CopyOnWriteArrayList<String>()
 
@@ -171,4 +174,8 @@ data class DownloadRecord(
     val okCount: Int? = null,
     /** 单作品的平台作品 ID（BV 号/aweme_id 等，链接里有的那个；旧记录为空） */
     val mediaId: String = "",
+    /** 首个条目的作品发布时间（毫秒，0=未知；旧记录为 0） */
+    val publishTimeMs: Long = 0L,
+    /** 每个条目对应作品的发布时间（毫秒，0=未知；与缩略图一一对应） */
+    val publishTimes: List<Long> = emptyList(),
 )

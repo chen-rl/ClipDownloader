@@ -5,6 +5,7 @@ import com.clipdownloader.download.sign.DouyinRequestSigner
 import com.clipdownloader.model.MediaQuality
 import com.clipdownloader.model.ParsedMedia
 import com.clipdownloader.model.Platform
+import com.clipdownloader.model.PublishTime
 import com.clipdownloader.util.LogFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -491,7 +492,9 @@ class DouyinUserParser {
                 title = title,
                 author = who,
                 rawShareText = "https://www.douyin.com/video/$awemeId",
-                originalUrl = "https://www.douyin.com/video/$awemeId"
+                originalUrl = "https://www.douyin.com/video/$awemeId",
+                // 桌面站接口给的是秒；置顶作品也是真实发布时间
+                publishTimeMs = PublishTime.toMillis(item.optLong("create_time", 0L))
             )
 
             // 图文作品

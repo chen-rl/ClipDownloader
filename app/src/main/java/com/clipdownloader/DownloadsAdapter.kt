@@ -14,6 +14,7 @@ import com.clipdownloader.databinding.ItemDownloadBinding
 import com.clipdownloader.model.DownloadBatchState
 import com.clipdownloader.model.DownloadRecord
 import com.clipdownloader.model.Platform
+import com.clipdownloader.model.PublishTime
 import com.clipdownloader.util.ThumbLoader
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -213,7 +214,12 @@ class DownloadsAdapter(
         // 底部行左端作品 ID、右端总大小；进行/失败态维持原有进度/原因显示
         val completed = batch.phase == DownloadBatchState.Phase.COMPLETED
         val counts = if (completed) batchCountsText(batch) else ""
-        val detail = if (completed && batch.workId.isNotBlank()) batch.workId else batchDetailText(batch)
+        // 底部行左端：发布时间说明在前（完态才显示，下载中列表还在逐条追加）、作品 ID 在后
+        val publishText = if (completed) PublishTime.rangeText(batch.itemPublishTimes.toList()) else ""
+        val detail = detailText(
+            publishText,
+            if (completed && batch.workId.isNotBlank()) batch.workId else batchDetailText(batch)
+        )
         val totalSize = if (completed) batch.itemSizes.sum() else 0L
 
         // 关键：整行重绑必须显式设置单/多布局可见性。RecyclerView 复用的
@@ -357,6 +363,10 @@ class DownloadsAdapter(
     /** 底部行左端：作品 ID（无则空，文件名不再混在这里） */
     private fun recordIdText(record: DownloadRecord): String = record.mediaId
 
+    /** 底部行左端文本：发布时间说明在前、作品 ID 在后，以「 · 」相连；任一为空则只留另一个 */
+    private fun detailText(publishText: String, idText: String): String =
+        listOf(publishText, idText).filter { it.isNotBlank() }.joinToString(" · ")
+
     /** 多图格子的逐格状态：跳过=「已存在」、失败=「失败」、成功=「成功」，三态都标 */
     private fun recordCellStates(record: DownloadRecord): List<String> {
         @Suppress("UNNECESSARY_SAFE_CALL")
@@ -409,8 +419,13 @@ class DownloadsAdapter(
         b.btnRedownloadM.visibility = if (canRedownload) View.VISIBLE else View.GONE
         b.btnRedownloadM.setOnClickListener { onRedownload(record) }
 
-        // 底部行：左端作品 ID（失败记录显示错误原因），右端整批总大小（只算本批落盘文件）
-        val detail = if (!record.success) (record.error ?: "下载失败") else recordIdText(record)
+        // 底部行：左端「发布时间 · 作品 ID」（失败记录显示错误原因），右端整批总大小（只算本批落盘文件）
+        // 旧记录没有 publishTimes（Gson 反序列化为 null），回退到首个条目的发布时间
+        @Suppress("UNNECESSARY_SAFE_CALL")
+        val publishTimes = (record.publishTimes ?: emptyList())
+            .ifEmpty { listOf(record.publishTimeMs).filter { it > 0 } }
+        val detail = if (!record.success) (record.error ?: "下载失败")
+        else detailText(PublishTime.rangeText(publishTimes), recordIdText(record))
         val totalSize = record.fileSize
         // 单图缩略图右上角状态角标：跳过=已存在，失败=失败，成功=成功（三态都标）
         val thumbState = when {

@@ -11,6 +11,7 @@
 | 分享到本应用 | 分享菜单选「下载到本机」，或选中文字后用 `PROCESS_TEXT`，即使不打开首页也能直接解析 |
 | 复制后自动解析 | 复制链接后打开 App 自动读取剪贴板并解析（`打开时自动读剪贴板` 可关闭） |
 | 实况图（动图）保存 | 平台侧的 live 图（抖音 / 小红书图集中的动图）保存为「`_live.mp4` 视频 + `.jpg` 原图」两个文件，在列表里标注为「动图」 |
+| 记录作品发布时间 | 文件名加发布日期前缀（`20261117_标题…`，按文件名排序即按发布时间排序）；下载记录显示发布日期（主页批量为日期范围）；图片写入 EXIF 拍摄时间，相册与文件管理器按发布日期归档。目前覆盖抖音、B站，其他平台与走云端通道解析的单作品不显示 |
 | 一链多媒体 | 单条链接内的多图 / 多动图 / 多视频全部下载 |
 | 按平台分文件夹 | 可开关；开=按平台（或博主名）分文件夹，关=全部直接存根目录 |
 | 解析通道可选 | 国内/国外分别走本地解析器或云端通道；云端通道可增删、可指定每个通道支持的平台 |
@@ -79,7 +80,8 @@ ClipDownloader/
         │   │   └── MotionPhotoUtils.kt        # Motion Photo 打包工具（当前未调用，见「技术要点」）
         │   ├── model/
         │   │   ├── ParsedMedia.kt             # 数据模型 + Platform 枚举
-        │   │   └── DownloadRecord.kt          # 下载记录 / 批量状态模型
+        │   │   ├── DownloadRecord.kt          # 下载记录 / 批量状态模型
+        │   │   └── PublishTime.kt             # 作品发布时间的归一与展示（纯 Kotlin）
         │   └── util/
         │       ├── PreferencesManager.kt      # SharedPreferences 封装 + 云端通道默认定义
         │       ├── DownloadRecordStore.kt     # 下载历史（JSON 持久化，异步写 / 内存读）
@@ -104,6 +106,7 @@ ClipDownloader/
             └── xml/                           # file_paths / network_security_config
     └── src/test/
         ├── java/com/clipdownloader/download/sign/DouyinSigningGoldenTest.kt  # 抖音签名黄金向量测试
+        ├── java/com/clipdownloader/model/PublishTimeTest.kt                  # 发布时间归一 / 格式化
         └── resources/douyin_signing_golden.json                               # 由参考实现生成的向量
 ```
 
@@ -148,6 +151,7 @@ push 到 `main` 或发起 PR 时触发，跑一次 `assembleDebug` 确认能编�
 4. **博主主页链接**请到「主页下载」栏目解析，可批量下载 TA 的全部作品。分享或复制的短链（`v.douyin.com` / `v.kuaishou.com` / `b23.tv`）也会自动展开并转到该栏目
 5. **抖音主页**：不登录时只能拿到博主的最新作品（平台对游客只开放首页）。点「登录抖音」在应用内扫码或用手机号登录网页版，再重新解析即可获取全部；登录态保存在应用内，可随时点同一按钮退出
 6. 下载的文件默认保存在 `/storage/emulated/0/Download/ClipDownloader/`，开启「保存到平台独立文件夹」后按平台（或博主名）分子目录
+7. **发布时间**：抖音、B站的作品会把发布日期记在最前面——文件名形如 `20261117_作品文案_m标识_下载时间.mp4`，下载记录卡片底部显示「发布 2026-11-17」（主页批量显示日期范围），图片的拍摄时间也写成发布时间。平台没给时间、或作品经云端通道解析时，这部分不显示，文件名也不加前缀
 
 ### 实况图（动图）处理规则
 
@@ -190,6 +194,7 @@ push 到 `main` 或发起 PR 时触发，跑一次 `assembleDebug` 确认能编�
 - **缩略图**：`ThumbLoader` 本地文件优先，远程封面按平台带 Referer / 桌面 UA（微博 sinaimg 等图床无来源请求直接 403），失败后冷却重试
 - **云端通道协议**：各站加密协议（AES-GCM 信封、HMAC 签名、SHA-256 签名、异步任务轮询等）以 Android 原生加密实现，零额外依赖
 - **抖音主页作品**（`DouyinUserParser` 通道 1）：请求桌面站作品接口 `/aweme/v1/web/aweme/post/`。该接口在抖音的签名保护清单里，请求需要两道纯 Kotlin 签名——`a_bogus`（SM3 摘要链 + 非标准 RC4 + 自定义 base64）与 `x-secsdk-web-signature`（`md5(uifid_timestamp_盐_query)`）——外加 `x-tt-argus` / `uifid` 请求头，以及**服务端签发**的 `ttwid`、`UIFID_TEMP` cookie（随机 uifid 会被网关以 `Validate Error` 拒绝）。身份 cookie 由系统 WebView 访问一次用户页取得（页面受 acrawler 挑战保护，需执行 JS；WebView 取到即销毁），之后全部走 OkHttp。平台对游客只返回首页作品，翻页被登录墙截断；应用内登录抖音网页版后可翻到底。签名实现与 Python 参考实现逐位一致，由黄金向量单元测试保证
+- **作品发布时间**：各平台的时间单位不同（抖音 `create_time`、B站 `pubdate` / 投稿列表 `created` 均为秒），入口统一经 `PublishTime.toMillis` 归一成毫秒存进 `ParsedMedia.publishTimeMs`（0 = 未知），同一作品的多个媒体共用。落盘时三处体现：文件名加 `yyyyMMdd_` 前缀（`buildFileName`，去重只认 `_m<hash>_` 标识，不受影响）；`stampPublishTime` 在通知媒体扫描之前把文件修改时间设为发布时间，图片再用 ExifInterface 写入 EXIF 拍摄时间；`DownloadRecord` 按条目保存 `publishTimes`，卡片底部显示。主页逐作解析会替换列表条目，云端通道不回传时间，替换时沿用列表条目的值。视频不改写 MP4 元数据
 - **Material 3 (Material You)** 设计语言，支持深色模式
 - **Android 10+ Scoped Storage** 兼容，使用 `Download/` 公共目录
 

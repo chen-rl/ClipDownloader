@@ -3,6 +3,7 @@ package com.clipdownloader.download
 import com.clipdownloader.model.MediaQuality
 import com.clipdownloader.model.ParsedMedia
 import com.clipdownloader.model.Platform
+import com.clipdownloader.model.PublishTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -71,6 +72,8 @@ class DouyinParser {
             val author = mediaInfo.optString("author")
             val cover = mediaInfo.optString("cover_url").ifEmpty { null }
             val duration = mediaInfo.optLong("duration", 0)
+            // 作品发布时间（毫秒，0 = 未知）：图集各张、实况图的图与视频、视频本体共用
+            val publishTime = PublishTime.toMillis(mediaInfo.optLong("create_time", 0L))
 
             val result = mutableListOf<ParsedMedia>()
 
@@ -177,7 +180,9 @@ class DouyinParser {
                 
                 // 如果图片里有 live URL，就不返回视频（避免重复）
                 // 如果没有图片，就返回视频
-                if (liveCount > 0 || images.length() == 0) return@withContext result
+                if (liveCount > 0 || images.length() == 0) {
+                    return@withContext withPublishTime(result, publishTime)
+                }
             }
 
             // 视频作品（没有图集，只有视频）
@@ -213,12 +218,16 @@ class DouyinParser {
                 )
             }
 
-            result
+            withPublishTime(result, publishTime)
         } catch (e: Exception) {
             com.clipdownloader.util.LogFile.e("DouyinParser", "解析异常", e)
             emptyList()
         }
     }
+
+    /** 把作品发布时间赋到该作品拆出的每个媒体项上（未知时原样返回） */
+    private fun withPublishTime(list: List<ParsedMedia>, publishTime: Long): List<ParsedMedia> =
+        if (publishTime <= 0) list else list.map { it.copy(publishTimeMs = publishTime) }
 
     /**
      * 从短链解析视频 ID：
@@ -657,6 +666,8 @@ class DouyinParser {
             put("author", author)
             put("duration", duration)
             put("music_duration", item.optJSONObject("music")?.optLong("duration", 0) ?: 0L)
+            // 作品发布时间（秒），0 = 页面没给
+            put("create_time", item.optLong("create_time", 0L))
             put("images", imageItems)
             put("video_id", videoId)
             put("qualities", JSONArray().apply { qualities.forEach { q ->

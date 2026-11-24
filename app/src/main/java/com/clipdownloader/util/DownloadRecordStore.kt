@@ -75,6 +75,9 @@ class DownloadRecordStore private constructor(context: Context) {
                     itemSkipped = r.itemSkipped ?: emptyList(),
                     itemErrors = r.itemErrors ?: emptyList(),
                     avatarUrl = r.avatarUrl ?: "",
+                    sizes = r.sizes ?: emptyList(),
+                    // 发布时间是后加的字段：旧记录没有，反序列化为 null
+                    publishTimes = r.publishTimes ?: emptyList(),
                 )
             }
             records.addAll(fixed.sortedByDescending { it.timestamp })
