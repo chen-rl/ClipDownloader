@@ -7,7 +7,7 @@
 | 功能 | 说明 |
 |------|------|
 | 首页解析下载 | 粘贴链接或整段分享文案 → 解析 → 勾选媒体 + 选画质 → 下载 |
-| 博主主页批量下载 | 粘贴 B站 / 抖音 / 快手 的主页地址或分享短链，批量下载全部作品（增量去重，已下载的自动跳过） |
+| 博主主页批量下载 | 粘贴 B站 / 抖音 / 快手 的主页地址或分享短链，批量下载全部作品（增量去重，已下载的自动跳过）。抖音需在应用内登录网页版后才能翻页获取全部，游客身份只返回最新作品 |
 | 分享到本应用 | 分享菜单选「下载到本机」，或选中文字后用 `PROCESS_TEXT`，即使不打开首页也能直接解析 |
 | 复制后自动解析 | 复制链接后打开 App 自动读取剪贴板并解析（`打开时自动读剪贴板` 可关闭） |
 | 实况图（动图）保存 | 平台侧的 live 图（抖音 / 小红书图集中的动图）保存为「`_live.mp4` 视频 + `.jpg` 原图」两个文件，在列表里标注为「动图」 |
@@ -29,6 +29,8 @@ ClipDownloader/
 ├── gradle.properties
 ├── local.properties                # 本机 SDK 路径（不入库）
 ├── clipdownloader.jks              # 固定签名 keystore（debug/release 共用）
+├── THIRD_PARTY_NOTICES.md           # 第三方声明（抖音签名代码的移植来源与许可证）
+├── licenses/                        # 第三方许可证副本（Apache-2.0）
 ├── gradlew
 ├── gradle/wrapper/
 ├── docs/
@@ -47,6 +49,7 @@ ClipDownloader/
         │   ├── App.kt                        # Application：通知渠道
         │   ├── MainActivity.kt               # 主界面：底部四 Tab + 权限引导 + 剪贴板读取
         │   ├── ShareActivity.kt              # 分享入口（ACTION_SEND / PROCESS_TEXT）
+        │   ├── DouyinLoginDialog.kt          # 抖音网页版登录对话框（登录后主页作品可翻页获取全部）
         │   ├── DownloadResultActivity.kt     # 下载完成通知点击跳转
         │   ├── DownloadsAdapter.kt           # 下载页列表（进度 / 历史）
         │   ├── MediaPickAdapter.kt           # 解析结果勾选列表
@@ -55,7 +58,13 @@ ClipDownloader/
         │   │   ├── PlatformParser.kt          # 链接识别 → Platform 枚举
         │   │   ├── ParsedMedia 相关模型       # 见 model/
         │   │   ├── DouyinParser.kt            # 抖音
-        │   │   ├── DouyinUserParser.kt        # 抖音博主主页
+        │   │   ├── DouyinUserParser.kt        # 抖音博主主页（桌面站作品接口：签名请求 + 翻页）
+        │   │   ├── DouyinWebCookieSeeder.kt   # 抖音网页身份：WebView 取 ttwid / UIFID_TEMP，登录态判断
+        │   │   ├── sign/                      # 抖音网页端签名，纯 Kotlin（移植来源见 THIRD_PARTY_NOTICES.md）
+        │   │   │   ├── Sm3.kt                 # 国密 SM3 哈希
+        │   │   │   ├── ABogus.kt              # 请求参数 a_bogus
+        │   │   │   ├── DouyinWebSign.kt       # x-secsdk-web-signature 与完整签名流程
+        │   │   │   └── SignHex.kt             # 十六进制 / MD5 小工具
         │   │   ├── KuaishouParser.kt          # 快手
         │   │   ├── KuaishouUserParser.kt      # 快手博主主页
         │   │   ├── BilibiliParser.kt          # B站
@@ -76,12 +85,12 @@ ClipDownloader/
         │       ├── DownloadRecordStore.kt     # 下载历史（JSON 持久化，异步写 / 内存读）
         │       ├── LogFile.kt                 # 日志文件（单后台线程写入）
         │       └── ThumbLoader.kt             # 统一缩略图加载（本地优先 + 带 Referer）
-        └── res/
+        ├── res/
             ├── layout/
             │   ├── activity_main.xml          # 骨架：Toolbar + 内容区 + 底部导航
             │   ├── view_home.xml              # 首页
             │   ├── view_downloads.xml         # 下载页
-            │   ├── view_profile.xml           # 主页下载
+            │   ├── view_profile.xml           # 主页下载（含「登录抖音」入口）
             │   ├── view_settings.xml          # 设置页
             │   ├── item_download.xml          # 下载条目（单/多文件两种布局）
             │   ├── item_media_pick.xml        # 解析结果条目
@@ -93,6 +102,9 @@ ClipDownloader/
             ├── values/                        # colors / strings / themes / ids
             ├── values-night/colors.xml        # 深色模式
             └── xml/                           # file_paths / network_security_config
+    └── src/test/
+        ├── java/com/clipdownloader/download/sign/DouyinSigningGoldenTest.kt  # 抖音签名黄金向量测试
+        └── resources/douyin_signing_golden.json                               # 由参考实现生成的向量
 ```
 
 ## 构建方法
@@ -108,6 +120,7 @@ ClipDownloader/
 ```bash
 ./gradlew assembleRelease    # APK 输出到 app/build/outputs/apk/release/
 ./gradlew assembleDebug      # 调试版 APK
+./gradlew testDebugUnitTest  # 单元测试（抖音签名移植的黄金向量测试）
 ```
 
 APK 文件名固定为 `ClipDownloader_v{versionName}.apk`。若走命令行构建，需设置 `ANDROID_HOME` 环境变量，或在 `local.properties` 里写好 `sdk.dir`（注意用正斜杠）。
@@ -132,8 +145,9 @@ push 到 `main` 或发起 PR 时触发，跑一次 `assembleDebug` 确认能编�
    - **复制后自动解析**：复制链接后打开 App 会自动读取剪贴板（可在设置关闭）
    - **直接分享**：在平台 App 里点「分享 → 下载到本机」
 3. 带文案、带口令的整段分享文本都能识别，会自动从中提取链接
-4. **博主主页链接**请到「主页下载」栏目解析，可批量下载 TA 的全部作品
-5. 下载的文件默认保存在 `/storage/emulated/0/Download/ClipDownloader/`，开启「保存到平台独立文件夹」后按平台（或博主名）分子目录
+4. **博主主页链接**请到「主页下载」栏目解析，可批量下载 TA 的全部作品。分享或复制的短链（`v.douyin.com` / `v.kuaishou.com` / `b23.tv`）也会自动展开并转到该栏目
+5. **抖音主页**：不登录时只能拿到博主的最新作品（平台对游客只开放首页）。点「登录抖音」在应用内扫码或用手机号登录网页版，再重新解析即可获取全部；登录态保存在应用内，可随时点同一按钮退出
+6. 下载的文件默认保存在 `/storage/emulated/0/Download/ClipDownloader/`，开启「保存到平台独立文件夹」后按平台（或博主名）分子目录
 
 ### 实况图（动图）处理规则
 
@@ -175,6 +189,7 @@ push 到 `main` 或发起 PR 时触发，跑一次 `assembleDebug` 确认能编�
 - **动态照片打包工具**：`MotionPhotoUtils.pack()` 可把「封面 JPEG + 内嵌 mp4」合成单文件 Motion Photo（JPEG APP1 段写 `Camera:MicroVideo` / `MicroVideoOffset` XMP，尾部拼 mp4），采用流式读写与迭代求 offset、先写临时文件再 rename。**当前未被调用**：实况图改走双文件保存，此工具留作备用
 - **缩略图**：`ThumbLoader` 本地文件优先，远程封面按平台带 Referer / 桌面 UA（微博 sinaimg 等图床无来源请求直接 403），失败后冷却重试
 - **云端通道协议**：各站加密协议（AES-GCM 信封、HMAC 签名、SHA-256 签名、异步任务轮询等）以 Android 原生加密实现，零额外依赖
+- **抖音主页作品**（`DouyinUserParser` 通道 1）：请求桌面站作品接口 `/aweme/v1/web/aweme/post/`。该接口在抖音的签名保护清单里，请求需要两道纯 Kotlin 签名——`a_bogus`（SM3 摘要链 + 非标准 RC4 + 自定义 base64）与 `x-secsdk-web-signature`（`md5(uifid_timestamp_盐_query)`）——外加 `x-tt-argus` / `uifid` 请求头，以及**服务端签发**的 `ttwid`、`UIFID_TEMP` cookie（随机 uifid 会被网关以 `Validate Error` 拒绝）。身份 cookie 由系统 WebView 访问一次用户页取得（页面受 acrawler 挑战保护，需执行 JS；WebView 取到即销毁），之后全部走 OkHttp。平台对游客只返回首页作品，翻页被登录墙截断；应用内登录抖音网页版后可翻到底。签名实现与 Python 参考实现逐位一致，由黄金向量单元测试保证
 - **Material 3 (Material You)** 设计语言，支持深色模式
 - **Android 10+ Scoped Storage** 兼容，使用 `Download/` 公共目录
 
@@ -195,5 +210,6 @@ Manifest 中另用 `<queries>` 声明了各厂商相册/文件管理器包名，
 
 1. 云端通道均为第三方公共服务，实例地址或接口协议可能随时变更，建议在设置中自建或替换为可用通道
 2. 抖音/快手等平台 API 可能随时变化，本地解析逻辑需要相应更新
+3. 抖音网页端签名算法（`a_bogus` / `x-secsdk-web-signature`）与盐值随抖音前端 SDK 版本变化；接口返回空 body 或 `403 Blocked by ArgusSecurityPlugin …` 时，需要对照社区维护的参考实现更新 `download/sign/` 下的实现并重新生成黄金向量
 3. `clipdownloader.jks` 与其中的口令为固定签名，用于保证各版本可覆盖安装；请勿替换，否则老版本无法升级
 4. 下载大文件时建议连接 WiFi，或在设置中开启「仅 WiFi 下载」

@@ -146,6 +146,16 @@ object PlatformParser {
         return null
     }
 
+    /** 主页类平台的分享短链域名：作品与主页共用同一批短链域名，需先展开才能判断是不是主页 */
+    private val SHORT_LINK_HOSTS = setOf("v.douyin.com", "v.kuaishou.com", "b23.tv")
+
+    /** 是否为需要先展开才能识别的分享短链 */
+    fun isShortLink(url: String): Boolean {
+        val host = Regex("^https?://([^/?#]+)", RegexOption.IGNORE_CASE).find(url)?.groupValues?.get(1)
+            ?.lowercase() ?: return false
+        return host in SHORT_LINK_HOSTS
+    }
+
     /**
      * 从分享文本中提取 URL
      *

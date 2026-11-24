@@ -21,6 +21,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.clipdownloader.databinding.ActivityMainBinding
 import com.clipdownloader.databinding.ItemPlatformChannelBinding
 import com.clipdownloader.download.DownloadManager
+import com.clipdownloader.download.DouyinWebCookieSeeder
 import com.clipdownloader.download.PlatformParser
 import com.clipdownloader.model.DownloadBatchState
 import com.clipdownloader.model.DownloadRecord
@@ -381,8 +382,16 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, "未识别到支持的平台链接", Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            // 博主主页链接 → 「主页下载」栏目（粘贴框解析后手动下载）
-            val profile = withContext(Dispatchers.IO) { PlatformParser.detectProfile(text) }
+            // 博主主页链接 → 「主页下载」栏目（粘贴框解析后手动下载）。
+            // 主页短链（v.douyin.com 等）要先跟随重定向才能识别，否则会被当成单个作品
+            val profile = withContext(Dispatchers.IO) {
+                PlatformParser.detectProfile(text)
+                    ?: if (PlatformParser.extractUrl(text)?.let { PlatformParser.isShortLink(it) } == true) {
+                        resolveProfileLink(text)
+                    } else {
+                        null
+                    }
+            }
             if (profile != null && profile.first == platform) {
                 binding.bottomNav.selectedItemId = R.id.nav_profile
                 binding.viewProfile.editProfileLink.setText(text)
@@ -551,6 +560,26 @@ class MainActivity : AppCompatActivity() {
             refreshDownloadsList()
         }
 
+        // 抖音登录态：游客只能拿到博主的最新作品，登录后作品接口才允许翻页
+        binding.viewProfile.btnDouyinLogin.setOnClickListener {
+            if (DouyinWebCookieSeeder.isLoggedIn(DouyinWebCookieSeeder.currentCookie())) {
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("退出抖音登录")
+                    .setMessage("退出后只能以游客身份获取抖音博主的最新作品，确定退出？")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("退出") { _, _ ->
+                        DouyinWebCookieSeeder.clear(this) {
+                            Toast.makeText(this, "已退出抖音登录", Toast.LENGTH_SHORT).show()
+                            refreshDouyinLoginButton()
+                        }
+                    }
+                    .show()
+            } else {
+                DouyinLoginDialog.show(this) { refreshDouyinLoginButton() }
+            }
+        }
+        refreshDouyinLoginButton()
+
         // 强制重下入参（forceRedownload/overwriteExisting）只由设置页两个开关 +
         // 记录卡片「重下」按钮驱动；主页下载栏不设独立强制重下入口
 
@@ -576,6 +605,13 @@ class MainActivity : AppCompatActivity() {
             refreshDownloadsList()
             Toast.makeText(this, "已清除 ${failed.size} 条失败记录", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    /** 抖音登录入口按钮文案随登录态变化 */
+    private fun refreshDouyinLoginButton() {
+        binding.viewProfile.btnDouyinLogin.text =
+            if (DouyinWebCookieSeeder.isLoggedIn(DouyinWebCookieSeeder.currentCookie())) "已登录抖音 · 退出登录"
+            else "登录抖音（获取全部作品）"
     }
 
     /** 记录卡片「重下」（仅失败记录显示）：直接重新解析下载，覆盖与否由设置开关决定，不弹窗 */
@@ -626,15 +662,20 @@ class MainActivity : AppCompatActivity() {
                 renderStatus("正在获取 ${platform.displayName} 主页作品列表…")
                 var listing: ProfileListing? = null
                 var listError = ""
+                var douyinParser: com.clipdownloader.download.DouyinUserParser? = null
                 for (attempt in 1..3) {
                     listing = withContext(Dispatchers.IO) {
                         when (platform) {
                             com.clipdownloader.model.Platform.BILIBILI ->
                                 com.clipdownloader.download.BilibiliUserParser().listVideos(profile.second)
                                     ?.let { ProfileListing(it.author, it.avatar, it.total, it.videos) }
-                            com.clipdownloader.model.Platform.DOUYIN ->
-                                com.clipdownloader.download.DouyinUserParser().listVideos(profile.second)
+                            com.clipdownloader.model.Platform.DOUYIN -> {
+                                // 抖音通道需要 Activity 创建 WebView 取网页身份（游客或登录 cookie）
+                                val p = com.clipdownloader.download.DouyinUserParser()
+                                douyinParser = p
+                                p.listVideos(profile.second, activity = this@MainActivity)
                                     ?.let { ProfileListing(it.author, it.avatar, it.total, it.works) }
+                            }
                             com.clipdownloader.model.Platform.KUAISHOU -> {
                                 val p = com.clipdownloader.download.KuaishouUserParser()
                                 val r = p.listVideos(profile.second)
@@ -652,7 +693,10 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 if (listing == null) {
-                    val hint = listError.ifBlank { "接口风控，请稍后重试或更换网络" }
+                    // 优先显示解析器给出的具体原因（如无 WebView / 网关拒绝），再退回通用风控提示
+                    val hint = listOf(listError, douyinParser?.lastError.orEmpty())
+                        .firstOrNull { it.isNotBlank() }
+                        ?: "接口风控，请稍后重试或更换网络"
                     h.tvProfileStatus.text = "获取${platform.displayName}主页列表失败（$hint）"
                     Toast.makeText(
                         this@MainActivity,
@@ -731,7 +775,10 @@ class MainActivity : AppCompatActivity() {
                     h.layoutProfileQuality.visibility = View.GONE
                 }
                 h.cardProfileResult.visibility = View.VISIBLE
-                h.tvProfileStatus.text = "解析完成 · ${listing.author}"
+                // 抖音游客态只返回首页作品：明确提示登录后才能拿全量
+                val guestNote = if (platform == Platform.DOUYIN && douyinParser?.guestLimited == true)
+                    "\n（游客身份仅含最新作品；点「登录抖音」后重新解析可获取全部）" else ""
+                h.tvProfileStatus.text = "解析完成 · ${listing.author}$guestNote"
                 refreshProfileSummary()
             } finally {
                 downloadManager.removeParseProgressListener(listener)

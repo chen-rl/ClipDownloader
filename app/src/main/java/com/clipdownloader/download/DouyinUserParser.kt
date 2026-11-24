@@ -1,5 +1,7 @@
 package com.clipdownloader.download
 
+import android.app.Activity
+import com.clipdownloader.download.sign.DouyinRequestSigner
 import com.clipdownloader.model.MediaQuality
 import com.clipdownloader.model.ParsedMedia
 import com.clipdownloader.model.Platform
@@ -12,15 +14,19 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
- * 抖音博主主页解析：列出用户全部作品（「主页下载」栏目用）。
+ * 抖音博主主页解析：列出用户作品（「主页下载」栏目用）。
  *
- * 双通道顺序尝试（风控是间歇/地域性的，多通道互补）：
- * 1. iesdouyin v2 post API（移动 UA）：国内网络可用性高；
- * 2. share/user 页内嵌 _ROUTER_DATA JSON（与单视频分享页同路径）。
+ * 通道按可靠性顺序尝试：
+ * 1. 桌面站作品接口 /aweme/v1/web/aweme/post/：请求由纯 Kotlin 签名（a_bogus +
+ *    x-secsdk-web-signature，见 [com.clipdownloader.download.sign.DouyinRequestSigner]），
+ *    身份 cookie（ttwid / UIFID_TEMP）由 WebView 访问一次用户页取得。游客只能拿到首页
+ *    （置顶 + 最新若干条），应用内登录抖音后可翻页拿全量；
+ * 2. share/user 页内嵌 _ROUTER_DATA JSON；
+ * 3. www.douyin.com/user 页 RENDER_DATA。
+ * 后两个通道仅在页面未被风控替换时有效，作为兜底保留。
  *
  * 列表项自带 play_addr 直链与 bit_rate 清晰度档（体积），无需逐作二次解析。
  * 图文作品：images[] 每张出一个图片媒体；带内嵌视频的实况图额外出动图视频媒体。
@@ -34,6 +40,14 @@ class DouyinUserParser {
         val works: List<ParsedMedia>
     )
 
+    /** 最近一次失败原因（网关拒绝 / 无 WebView 等），供 UI 明确提示；为空表示未记录 */
+    var lastError: String = ""
+        private set
+
+    /** 本次结果被游客态登录墙截断（只拿到首页）；登录抖音后重新解析可获取全部 */
+    var guestLimited: Boolean = false
+        private set
+
     private val cookieManager = java.net.CookieManager()
 
     private val client = OkHttpClient.Builder()
@@ -43,14 +57,31 @@ class DouyinUserParser {
         .cookieJar(okhttp3.JavaNetCookieJar(cookieManager))
         .build()
 
-    suspend fun listVideos(secUid: String, maxPages: Int = 20): UserWorks? = withContext(Dispatchers.IO) {
+    /** 桌面站作品接口专用：不带本地 cookieJar，cookie 全部由 WebView 身份显式给出 */
+    private val desktopClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * @param activity 用于创建 WebView 取抖音网页身份；为 null 时跳过通道 1（只有兜底通道）
+     */
+    suspend fun listVideos(
+        secUid: String,
+        maxPages: Int = 20,
+        activity: Activity? = null,
+    ): UserWorks? = withContext(Dispatchers.IO) {
+        lastError = ""
+        guestLimited = false
         try {
+            // 通道 1：桌面站作品接口
+            if (activity != null) {
+                val viaApi = tryViaDesktopApi(secUid, maxPages, activity)
+                if (viaApi != null) return@withContext viaApi
+            }
+
             warmUpCookie()
             registerTtwid()
-
-            // 通道 1：v2 post API 分页
-            val viaApi = tryViaApi(secUid, maxPages)
-            if (viaApi != null) return@withContext viaApi
 
             // 通道 2：share/user 页 SSR
             val viaPage = tryViaSharePage(secUid)
@@ -60,18 +91,19 @@ class DouyinUserParser {
             val viaDesktop = tryViaDesktopPage(secUid)
             if (viaDesktop != null) return@withContext viaDesktop
 
-            LogFile.w(TAG, "三个通道均未获取到作品列表 secUid=${secUid.take(16)}…")
+            LogFile.w(TAG, "所有通道均未获取到作品列表 secUid=${secUid.take(16)}…")
+            if (lastError.isBlank()) lastError = "接口风控，请稍后重试或更换网络"
             null
         } catch (e: Exception) {
             LogFile.e(TAG, "拉取主页作品异常", e)
+            lastError = "拉取主页作品异常：${e.javaClass.simpleName}"
             null
         }
     }
 
     /**
-     * 注册 ttwid 设备令牌（字节跳动统一风控放行凭证）：
-     * 无 ttwid 时 v2 post API 返回 status=1、share 页不吐 _ROUTER_DATA。
-     * 注册成功后种到 iesdouyin/douyin 两个域，两个通道共用。
+     * 注册 ttwid 设备令牌（字节跳动统一风控放行凭证），供兜底通道 2/3 使用：
+     * 无 ttwid 时 share 页不吐 _ROUTER_DATA。注册成功后种到 iesdouyin/douyin 两个域。
      */
     private fun registerTtwid() {
         try {
@@ -113,41 +145,158 @@ class DouyinUserParser {
         }
     }
 
-    // ==================== 通道 1：v2 post API ====================
+    // ==================== 通道 1：桌面站作品接口（a_bogus + x-secsdk-web-signature） ====================
 
-    private fun tryViaApi(secUid: String, maxPages: Int): UserWorks? {
+    /**
+     * 桌面站作品接口 /aweme/v1/web/aweme/post/。请求由 [DouyinRequestSigner] 纯 Kotlin 签名，
+     * 身份 cookie（ttwid / UIFID_TEMP，登录后另有 sessionid 等）由 WebView 访问一次用户页取得。
+     *
+     * 游客态平台只返回首页（置顶 + 最新若干条），翻页被登录墙截断（has_more=1 但下一页没有
+     * aweme_list）；登录后可翻到底。网关以 403 拒绝（身份失效）时强制重新签发身份重试一次。
+     */
+    private suspend fun tryViaDesktopApi(secUid: String, maxPages: Int, activity: Activity): UserWorks? {
+        val pageUrl = "https://www.douyin.com/user/$secUid"
+        var cookie = obtainIdentity(activity, pageUrl, forceRefresh = false) ?: return null
+        val loggedIn = DouyinWebCookieSeeder.isLoggedIn(cookie)
+        val signer = DouyinRequestSigner(DouyinWebCookieSeeder.DESKTOP_UA)
+
         val all = mutableListOf<JSONObject>()
+        val seen = HashSet<String>()
         var author = ""
         var cursor = 0L
         var page = 1
-        var hasMore = true
-        while (hasMore && page <= maxPages) {
-            val url = "https://www.iesdouyin.com/web/api/v2/user/post/" +
-                "?sec_uid=${URLEncoder.encode(secUid, "UTF-8")}" +
-                "&count=20&max_cursor=$cursor&aid=1128&_signature=_02B4Z6wo00f01"
-            val json = httpGetJson(url, mobileUa = true) ?: run {
-                // 分页中途失败不能丢弃已取数据：有作品就返回部分结果
-                LogFile.w(TAG, "v2 post API 第 $page 页请求失败，返回已取 ${all.size} 个作品")
-                return if (all.isEmpty()) null else convert(all, author)
+        var refreshed = false
+        // 上一页是否声明还有更多：登录墙的空响应只有 {"status_code":0}，需据此判断是被截断还是取完
+        var lastHasMore = false
+        while (page <= maxPages) {
+            val uifid = DouyinWebCookieSeeder.cookieValue(cookie, "UIFID")
+                ?: DouyinWebCookieSeeder.cookieValue(cookie, "UIFID_TEMP")
+                ?: run {
+                    lastError = "抖音网页身份缺少 uifid，请重新解析"
+                    LogFile.w(TAG, "cookie 中没有 UIFID/UIFID_TEMP，无法签名")
+                    return if (all.isEmpty()) null else convert(all, author)
+                }
+            val signed = signer.signProtectedQuery(buildPostPairs(secUid, cursor, uifid), uifid).query
+            val (code, json) = httpGetJsonWithHeaders(POST_API + "?" + signed, desktopHeaders(secUid, cookie, uifid))
+
+            if (code == 403 && !refreshed) {
+                // ArgusSecurityPlugin 拒绝：访客身份已失效，重新签发后重试本页
+                LogFile.w(TAG, "作品接口被网关拒绝（403），重新获取抖音网页身份")
+                refreshed = true
+                cookie = obtainIdentity(activity, pageUrl, forceRefresh = true) ?: run {
+                    lastError = "抖音网页身份已失效，且无法重新获取"
+                    return if (all.isEmpty()) null else convert(all, author)
+                }
+                continue
             }
-            val status = json.optInt("status_code", -1)
-            if (status != 0 && all.isEmpty()) {
-                LogFile.w(TAG, "v2 post API status=$status")
-                return null
+            if (json == null || json.optInt("status_code", -1) != 0) {
+                val status = json?.optInt("status_code", -1) ?: -1
+                if (all.isEmpty()) {
+                    lastError = "抖音作品接口无响应（HTTP $code status=$status），请稍后重试"
+                    LogFile.w(TAG, "桌面作品接口失败：HTTP $code status=$status")
+                    return null
+                }
+                LogFile.w(TAG, "桌面作品接口第 $page 页失败（HTTP $code status=$status），返回已取 ${all.size} 个作品")
+                break
             }
-            val list = json.optJSONArray("aweme_list") ?: JSONArray()
-            for (i in 0 until list.length()) list.optJSONObject(i)?.let { all.add(it) }
+            val list = json.optJSONArray("aweme_list")
+            if (list == null || list.length() == 0) {
+                // status_code=0 但没有 aweme_list：游客到此被登录墙截断，或确实没有更多作品
+                if (all.isEmpty()) {
+                    lastError = if (loggedIn) "该账号没有可见作品" else "未取到作品，请登录抖音后重试"
+                    LogFile.w(TAG, "作品接口返回空列表（登录态=$loggedIn）")
+                    return null
+                }
+                // status_code=0 但没有 aweme_list：上一页声明还有更多却被截断，即游客撞上登录墙
+                if (!loggedIn && lastHasMore) guestLimited = true
+                LogFile.d(TAG, "作品列表结束于第 $page 页（登录态=$loggedIn，游客受限=$guestLimited）")
+                break
+            }
+            for (i in 0 until list.length()) {
+                val item = list.optJSONObject(i) ?: continue
+                val id = item.optString("aweme_id")
+                if (id.isNotBlank() && seen.add(id)) all.add(item)
+            }
             if (author.isBlank()) {
                 author = list.optJSONObject(0)?.optJSONObject("author")?.optString("nickname").orEmpty()
-                    .ifBlank { json.optJSONObject("user")?.optString("nickname").orEmpty() }
             }
-            hasMore = json.optInt("has_more", 0) == 1
-            cursor = json.optLong("max_cursor", 0L)
+            lastHasMore = json.optInt("has_more", 0) == 1
+            val next = json.optLong("max_cursor", 0L)
+            if (!lastHasMore || next <= 0L || next == cursor) break
+            cursor = next
             page++
         }
         if (all.isEmpty()) return null
-        LogFile.d(TAG, "v2 post API：${all.size} 个作品 · $author")
+        LogFile.d(TAG, "桌面作品接口：${all.size} 个作品 · $author（登录态=$loggedIn，游客受限=$guestLimited）")
         return convert(all, author)
+    }
+
+    /** 取抖音网页身份 cookie；失败时记录 [lastError] 并返回 null */
+    private suspend fun obtainIdentity(activity: Activity, url: String, forceRefresh: Boolean): String? {
+        val cookie = try {
+            DouyinWebCookieSeeder.ensureIdentity(activity, url, forceRefresh = forceRefresh)
+        } catch (e: Exception) {
+            LogFile.w(TAG, "获取抖音网页身份异常: ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+        if (cookie == null) lastError = "无法建立抖音网页身份（需要系统 WebView 与可用网络）"
+        return cookie
+    }
+
+    /**
+     * 作品接口的业务参数（字段与顺序取自对抖音网页版用户主页真实请求的抓包）。
+     * 浏览器平台相关字段与 [DouyinWebCookieSeeder.DESKTOP_UA]（64 位 Windows 上的 Chrome）及
+     * a_bogus 默认的 Windows 1080p browser_info 保持一致——query 与自己的 UA 自相矛盾
+     * 等于白白送给平台一个风控信号。
+     */
+    private fun buildPostPairs(secUid: String, cursor: Long, uifid: String): List<Pair<String, String>> {
+        val chrome = "159.0.0.0"
+        return listOf(
+            "device_platform" to "webapp", "aid" to "6383", "channel" to "channel_pc_web",
+            "update_version_code" to "170400", "pc_client_type" to "1", "pc_libra_divert" to "Windows",
+            "support_h265" to "0", "support_dash" to "0", "version_code" to "290100",
+            "version_name" to "29.1.0", "cookie_enabled" to "true", "screen_width" to "1920",
+            "screen_height" to "1080", "browser_language" to "zh-CN", "browser_platform" to "Win32",
+            "browser_name" to "Chrome", "browser_version" to chrome, "browser_online" to "true",
+            "engine_name" to "Blink", "engine_version" to chrome, "os_name" to "Windows",
+            "os_version" to "10", "cpu_core_num" to "12", "device_memory" to "8",
+            "platform" to "PC", "downlink" to "10", "effective_type" to "4g", "round_trip_time" to "50",
+            "uifid" to uifid,
+            "sec_user_id" to secUid, "max_cursor" to cursor.toString(), "locate_query" to "false",
+            "show_live_replay_strategy" to "1", "need_time_list" to "1", "time_list_query" to "0",
+            "whale_cut_token" to "", "cut_version" to "1", "count" to "18",
+            "publish_video_strategy_type" to "2", "from_user_page" to "1",
+        )
+    }
+
+    private fun desktopHeaders(secUid: String, cookie: String, uifid: String): Map<String, String> = mapOf(
+        "User-Agent" to DouyinWebCookieSeeder.DESKTOP_UA,
+        "Accept" to "*/*",
+        "Referer" to "https://www.douyin.com/user/$secUid",
+        // 2026-08 起抖音网关的 ArgusSecurityPlugin 要求这两个请求头存在
+        "x-tt-argus" to "1",
+        "uifid" to uifid,
+        "Cookie" to cookie,
+    )
+
+    /** GET 并解析 JSON，返回 (HTTP 状态码, JSON)；非 JSON 响应（如网关 403 的纯文本）的 JSON 为 null */
+    private fun httpGetJsonWithHeaders(url: String, headers: Map<String, String>): Pair<Int, JSONObject?> {
+        return try {
+            val builder = Request.Builder().url(url)
+            headers.forEach { (name, value) -> builder.header(name, value) }
+            desktopClient.newCall(builder.build()).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                val json = try {
+                    JSONObject(body)
+                } catch (_: Exception) {
+                    null
+                }
+                resp.code to json
+            }
+        } catch (e: Exception) {
+            LogFile.w(TAG, "GET 异常 ${e.javaClass.simpleName}: ${e.message}")
+            -1 to null
+        }
     }
 
     // ==================== 通道 2：share/user 页 SSR ====================
@@ -436,6 +585,10 @@ class DouyinUserParser {
 
     companion object {
         private const val TAG = "DouyinUserParser"
+
+        /** 桌面站「账号发布作品」接口（抖音网页 SDK 的签名保护路径之一） */
+        private const val POST_API = "https://www.douyin.com/aweme/v1/web/aweme/post/"
+
         private const val MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36"
         private const val DESKTOP_UA =

@@ -126,6 +126,19 @@
 
                     </LinearLayout>
 
+                    <!-- 抖音登录入口：游客只能拿到博主的最新作品，登录后才能获取全部 -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_douyin_login"
+                        style="@style/Widget.Material3.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="start"
+                        android:layout_marginTop="4dp"
+                        android:text="登录抖音（获取全部作品）"
+                        android:textSize="13sp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp" />
+
                     <!-- 解析状态（通道尝试 + 解析进度计数） -->
                     <TextView
                         android:id="@+id/tv_profile_status"

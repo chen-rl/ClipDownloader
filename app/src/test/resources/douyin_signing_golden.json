@@ -1,0 +1,170 @@
+{
+ "_source": "Evil0ctal/Douyin_TikTok_Download_API src/dtk/signing/native (Apache-2.0) @ ed4ec42534b1194f8d8c18be7b4ba493334f5321",
+ "sm3_abc_hex": "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0",
+ "sm3_abcd_repeat16_hex": "debe9ff92275b8a138604889c18e5a4d6fdb70e5387e5765293dcba39c0c5732",
+ "sm3_64a_hex": "616ec433c359e7c2b19f360e2b8f2a1b6e9ed76b8dc1a7d207b31a5341c611e9",
+ "sm3_empty_hex": "1ab21d8355cfa17f8e61194831e81a8f22bec8c728fefb747ed035eb5082aa2b",
+ "digest_of_query_hex": "04d964c55cc10358e354228e2256d77448b37c91f2951c465086f403a9d330ea",
+ "digest_of_body_empty_hex": "40fd9cf02c609f961b7a5234c578ea77f55947b163621c8e05637bc7b00998f0",
+ "digest_of_query_cn_hex": "921b8aab9d4c3cf81674b1018e2e569f821c88e87b1cf394bcb38e7f3eaa7f7d",
+ "ua_digest_hex": "c5083a8c7e488a99eea58a8adb4dfc41103b954755e0e651a30c9ab32fbfaf93",
+ "rc4_vec_key": [
+  0,
+  1,
+  14
+ ],
+ "rc4_vec_data_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+ "rc4_vec_out_hex": "b0aba97c138bfd7a6c2672289e981b6ff1eaf6b2aa7c58b3f5bb79daffdec474bcede6b45962676ca21604aa34606443082b96a770bcc0b053c677eb4c0ec3ef",
+ "ua_jsbytes_hex": "4d6f7a696c6c612f352e3020284d6163696e746f73683b20496e74656c204d6163204f5320582031305f31355f3729204170706c655765624b69742f3533372e333620284b48544d4c2c206c696b65204765636b6f29204368726f6d652f3134362e302e302e30205361666172692f3533372e3336",
+ "ua_sealed_hex": "fdc5d1167be29a5251014803bad87403889590cecd017584a4cc17a48fe3970affec8bc45d1f617aba601fb4477a634c796ad4f821de93e5209639ff4500cafe5000f4dc22e2bafa0584092ee2d5d52089c0b2cfcb01cc9617f0f4d81712a82de11afd4e4c03f712a9a11b1bc6424f2c752e540578",
+ "ua_sealed_b64": "eWgvhqF7obsvc6EpmziycV7XL8a0cgI1T8jgTKeNbjPeaKF1gvtiAPTEZavZAo08AIP6CdZALC6EbNqevfpUebcct0j7VPPDkRfsBmBXxwdsjBBMnjZ8biljt0Eg1OEzVvPt3LjptJUTYvu+JLsMBZ6mXcXV",
+ "b64_vec_hex": "fafbfcfdfeff0102",
+ "b64_vec_s4": "CFFSelaeDfm=",
+ "b64_vec_s3": "CFFSelaecfK=",
+ "fields": {
+  "L24": 41,
+  "L26": 60,
+  "L27": 6,
+  "L28": 3,
+  "L35": 1,
+  "L36": 0,
+  "L38": 33,
+  "L39": 0,
+  "L66": 3,
+  "L79": 44,
+  "L80": 0,
+  "L84": 2,
+  "L85": 0,
+  "L29": 0,
+  "L30": 195,
+  "L31": 35,
+  "L32": 12,
+  "L33": 162,
+  "L34": 1,
+  "L44": 14,
+  "L45": 0,
+  "L46": 0,
+  "L47": 0,
+  "L40": 0,
+  "L41": 0,
+  "L42": 0,
+  "L43": 0,
+  "L60": 255,
+  "L61": 194,
+  "L62": 35,
+  "L63": 12,
+  "L64": 162,
+  "L65": 1,
+  "L67": 97,
+  "L68": 24,
+  "L69": 0,
+  "L70": 0,
+  "L71": 239,
+  "L72": 24,
+  "L73": 0,
+  "L74": 0,
+  "L48": 84,
+  "L49": 124,
+  "L51": 197,
+  "L52": 82,
+  "L53": 177,
+  "L55": 44,
+  "L56": 138,
+  "L57": 224,
+  "L59": 72
+ },
+ "a_bogus": "O7UVDtW7m2RnaVMbmOab9bZUJe9MrPSyC4ToRw-TtOFBLqlPTRPy8rtdGoKYsEO8UYB0w91HudMlbEncpzXipHnpompDuOhWlTVnI0vL8qqsT0iQDNjkeuvFzw0n0RGqlQ54iAR6ZUr96fnAkNQE/d59eKoF5c8BMpxfkZubP9sgZFLALZnlPBGkuhRq",
+ "a_bogus_cn": "O7UVDtW7m2RnaVMbmOab9bZUJe9MrPSyq4ToSNNTtOFPLqlPTRPy8rtdGoKYsEO8UYB0w91HudMlbEncpzXipHnpompDuOhWlTVnI0vL8qqsT0iQDNjkeuvFzw0n0RGqlQ54iAR6ZUr96fnAkNQE/d59eKoF5c8BMpxfkZubP9sgZFLALZnlPBGkuh5U",
+ "js_bytes_cn_hex": "629697f32c61e9",
+ "encode_pairs_special": "device_platform=webapp&keyword=%E6%8A%96%E9%9F%B3%20%E6%B5%8B%E8%AF%95&count=10&a*b~c=x%2Fy%2Bz&empty=",
+ "a_bogus_raw_wire": "O7UVDtW7m2RnaVMbmOab9bZUJe9MrPSyC4ToRw-TtOFBLqlPTRPy8rtdGoKYsEO8UYB0w91HudMlbEncpzXipHnpompDuOhWlTVnI0vL8qqsT0iQDNjkeuvFzw0n0RGqlQ54iAR6ZUr96fnAkNQE%2Fd59eKoF5c8BMpxfkZubP9sgZFLALZnlPBGkuhRq",
+ "pairs": [
+  [
+   "device_platform",
+   "webapp"
+  ],
+  [
+   "aid",
+   "6383"
+  ],
+  [
+   "channel",
+   "channel_pc_web"
+  ],
+  [
+   "update_version_code",
+   "170400"
+  ],
+  [
+   "pc_client_type",
+   "1"
+  ],
+  [
+   "uifid",
+   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  ],
+  [
+   "sec_user_id",
+   "MS4wLjABAAAAKoSHpdcrBtD-BLlPR7AgdRhynsJ8U257_t6ONiiopTbYtkichnIYIu_32ba9sF1O"
+  ],
+  [
+   "max_cursor",
+   "0"
+  ],
+  [
+   "count",
+   "18"
+  ],
+  [
+   "whale_cut_token",
+   ""
+  ],
+  [
+   "from_user_page",
+   "1"
+  ]
+ ],
+ "pairs_special": [
+  [
+   "device_platform",
+   "webapp"
+  ],
+  [
+   "keyword",
+   "抖音 测试"
+  ],
+  [
+   "count",
+   "10"
+  ],
+  [
+   "a*b~c",
+   "x/y+z"
+  ],
+  [
+   "empty",
+   ""
+  ]
+ ],
+ "uifid": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+ "stamp": 1795500000,
+ "websign_final": "device_platform=webapp&aid=6383&channel=channel_pc_web&update_version_code=170400&pc_client_type=1&uifid=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&sec_user_id=MS4wLjABAAAAKoSHpdcrBtD-BLlPR7AgdRhynsJ8U257_t6ONiiopTbYtkichnIYIu_32ba9sF1O&max_cursor=0&count=18&whale_cut_token=&from_user_page=1&a_bogus=O7UVDtW7m2RnaVMbmOab9bZUJe9MrPSyC4ToRw-TtOFBLqlPTRPy8rtdGoKYsEO8UYB0w91HudMlbEncpzXipHnpompDuOhWlTVnI0vL8qqsT0iQDNjkeuvFzw0n0RGqlQ54iAR6ZUr96fnAkNQE%2Fd59eKoF5c8BMpxfkZubP9sgZFLALZnlPBGkuhRq&timestamp=1795500000&x-secsdk-web-signature=3c69fb5647fa49225bb4a9c710efb080",
+ "websign_signature": "3c69fb5647fa49225bb4a9c710efb080",
+ "websign_headers": {
+  "uifid": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "x-secsdk-web-signature": "3c69fb5647fa49225bb4a9c710efb080",
+  "x-secsdk-web-expire": "1795500000"
+ },
+ "seq": [
+  0.0068359375,
+  0.3251953125,
+  0.5,
+  0.9970703125,
+  0.09765625,
+  0.87890625
+ ],
+ "now_ms": 1795500000000,
+ "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+ "query": "device_platform=webapp&aid=6383&channel=channel_pc_web&update_version_code=170400&pc_client_type=1&uifid=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&sec_user_id=MS4wLjABAAAAKoSHpdcrBtD-BLlPR7AgdRhynsJ8U257_t6ONiiopTbYtkichnIYIu_32ba9sF1O&max_cursor=0&count=18&whale_cut_token=&from_user_page=1",
+ "query_cn": "device_platform=webapp&keyword=%E6%8A%96%E9%9F%B3%20%E6%B5%8B%E8%AF%95&count=10&a*b~c=x%2Fy%2Bz&empty="
+}
