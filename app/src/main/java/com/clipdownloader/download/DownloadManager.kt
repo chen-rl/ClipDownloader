@@ -425,6 +425,8 @@ private const val LINE_BREAK = "\n"
             batch.itemKinds.add(batch.currentKind)
             batch.itemDurations.add(media.duration)
             batch.itemPublishTimes.add(media.publishTimeMs)
+            batch.itemTitles.add(media.title)
+            batch.itemAuthors.add(media.author)
             batch.itemSizes.add(0L)
             batch.itemSkipped.add(false)
             // 路径列表始终按解析条目占位，不能只在完成后 append；否则前面失败时，
@@ -490,7 +492,11 @@ private const val LINE_BREAK = "\n"
             val result = try {
                 downloadMediaItem(
                     batch, media, index, total,
-                    withCover = !liveStills.contains(workMarkerOf(media) + "#" + media.partNo)
+                    // 另存封面的只有「单个视频」（不编号，封面是第 1 张）和「实况的动态视频」（它的静态原图
+                    // 不在本批时自己存一份）。这样 `_NN_cover` 只表示这两件事，多视频作品的视频不另存封面；
+                    // 静态原图已作为图片条目在本批一起下载时，动态视频不再存同一张图
+                    withCover = (media.partNo == 0 || media.livePair) &&
+                        !liveStills.contains(workMarkerOf(media) + "#" + media.partNo)
                 ).also { r ->
                     // 失败详情在这行体现（错误原因已带 HTTP 状态），成功则由保存行体现
                     if (!r.success) LogFile.w(TAG, "媒体[$index] 失败：${r.error}")
@@ -599,6 +605,8 @@ private const val LINE_BREAK = "\n"
                 durations = batch.itemDurations.toList(),
                 publishTimeMs = batch.itemPublishTimes.firstOrNull() ?: 0L,
                 publishTimes = batch.itemPublishTimes.toList(),
+                itemTitles = batch.itemTitles.toList(),
+                itemAuthors = batch.itemAuthors.toList(),
                 sizes = batch.itemSizes.toList(),
                 filePaths = batch.itemPaths.toList(),
                 itemSkipped = batch.itemSkipped.toList(),

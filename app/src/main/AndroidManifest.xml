@@ -86,6 +86,13 @@
             </intent-filter>
         </activity>
 
+        <!-- 作品详情：作品库里点开一个作品，看它下面的全部文件 -->
+        <activity
+            android:name=".WorkDetailActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- 下载完成通知点击 -->
         <activity
             android:name=".DownloadResultActivity"

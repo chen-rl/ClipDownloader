@@ -161,6 +161,9 @@ object WorkLayout {
         return out
     }
 
+    /** 旧版平铺文件名（`…_m<标识>_…`）。旧版的文件靠它识别；新版文件名里没有 `_m` 这一段 */
+    fun isLegacyName(fileName: String): Boolean = LEGACY_TOKEN.containsMatchIn(fileName)
+
     /** 文件名 / 目录名里的作品标识（新旧版文件名都认），认不出返回 null */
     fun tokenOf(name: String): String? =
         TOKEN.findAll(name).lastOrNull()?.value?.substring(1)

@@ -53,6 +53,14 @@
             android:layout_height="match_parent"
             android:visibility="gone" />
 
+        <!-- 作品库（已下载的作品按封面卡片墙排列） -->
+        <include
+            android:id="@+id/view_library"
+            layout="@layout/view_library"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+
         <!-- 设置 -->
         <include
             android:id="@+id/view_settings"

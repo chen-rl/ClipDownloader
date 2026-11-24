@@ -54,6 +54,7 @@ class DownloadRecordStore private constructor(context: Context) {
     private fun load() {
         try {
             if (!file.exists()) {
+                Log.i(TAG, "没有下载记录文件，从空开始")
                 loaded = true
                 return
             }
@@ -78,9 +79,12 @@ class DownloadRecordStore private constructor(context: Context) {
                     sizes = r.sizes ?: emptyList(),
                     // 发布时间是后加的字段：旧记录没有，反序列化为 null
                     publishTimes = r.publishTimes ?: emptyList(),
+                    itemTitles = r.itemTitles ?: emptyList(),
+                    itemAuthors = r.itemAuthors ?: emptyList(),
                 )
             }
             records.addAll(fixed.sortedByDescending { it.timestamp })
+            Log.i(TAG, "下载记录已加载：${records.size} 条")
         } catch (e: Exception) {
             Log.w(TAG, "读取下载记录失败", e)
             // 原文件备份保留（不覆盖不删除），persist 见 loadFailed 跳过写盘

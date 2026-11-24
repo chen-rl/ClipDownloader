@@ -25,8 +25,11 @@ import com.clipdownloader.download.DouyinWebCookieSeeder
 import com.clipdownloader.download.PlatformParser
 import com.clipdownloader.model.DownloadBatchState
 import com.clipdownloader.model.DownloadRecord
+import com.clipdownloader.model.LibraryWorks
 import com.clipdownloader.model.Platform
+import java.io.File
 import com.clipdownloader.util.DownloadRecordStore
+import com.clipdownloader.util.FileActions
 import com.clipdownloader.util.PreferencesManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +49,11 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var downloadsAdapter: DownloadsAdapter
     private lateinit var profileAdapter: DownloadsAdapter
+    private lateinit var libraryAdapter: LibraryAdapter
+
+    /** 作品库上次归并时的输入签名：记录与批次都没变就不重新扫磁盘 */
+    private var libraryInputSignature = ""
+    private var libraryJob: kotlinx.coroutines.Job? = null
 
     private var batchListener: ((List<DownloadBatchState>) -> Unit)? = null
     private var recordListener: ((List<DownloadRecord>) -> Unit)? = null
@@ -154,6 +162,8 @@ class MainActivity : AppCompatActivity() {
         prefs = PreferencesManager(this)
         consumedClips.addAll(prefs.getConsumedClips())
 
+        // 作品库的适配器要先建好：底部导航恢复到「作品库」页签时会立刻刷新它
+        setupLibrary()
         setupBottomNav()
         setupHome()
         setupDownloads()
@@ -186,6 +196,10 @@ class MainActivity : AppCompatActivity() {
                     showTab(binding.viewProfile.root, "主页下载", "博主作品批量下载")
                     refreshDownloadsList()
                 }
+                R.id.nav_library -> {
+                    showTab(binding.viewLibrary.root, "作品库", "已下载的作品，一个作品一张卡片")
+                    refreshLibrary(force = true)
+                }
                 R.id.nav_settings -> showTab(binding.viewSettings.root, "设置", "基础配置与平台管理")
             }
             true
@@ -202,6 +216,7 @@ class MainActivity : AppCompatActivity() {
         binding.viewHome.root.visibility = if (view === binding.viewHome.root) View.VISIBLE else View.GONE
         binding.viewDownloads.root.visibility = if (view === binding.viewDownloads.root) View.VISIBLE else View.GONE
         binding.viewProfile.root.visibility = if (view === binding.viewProfile.root) View.VISIBLE else View.GONE
+        binding.viewLibrary.root.visibility = if (view === binding.viewLibrary.root) View.VISIBLE else View.GONE
         binding.viewSettings.root.visibility = if (view === binding.viewSettings.root) View.VISIBLE else View.GONE
         binding.toolbar.title = title
         binding.toolbar.subtitle = subtitle
@@ -915,146 +930,55 @@ class MainActivity : AppCompatActivity() {
             pDone > 0 -> "已完成 $pDone 个主页下载"
             else -> "暂无主页下载记录"
         }
+
+        // 作品库跟着记录与批次变化刷新（输入没变时内部直接跳过）
+        refreshLibrary(force = false)
     }
 
-    /** 已知厂商相册包名（优先用相册打开视频/图片，而不是视频播放器） */
-    private val galleryPackages = listOf(
-        "com.coloros.gallery3d",         // OPPO/一加 相册
-        "com.heytap.gallery3d",
-        "com.oppo.gallery3d",
-        "com.miui.gallery",              // 小米相册
-        "com.sec.android.gallery3d",     // 三星相册
-        "com.huawei.photos",             // 华为图库
-        "com.google.android.apps.photos" // Google 相册
-    )
+    /** 打开已下载的文件（相册 / 播放器），实现在 [com.clipdownloader.util.FileActions] */
+    private fun openFile(path: String) = FileActions.open(this, path)
 
-    private fun openFile(path: String) {
-        try {
-            val file = java.io.File(path)
-            // 文件已被移动/删除（或路径失效）时直接提示，不要走 FileProvider 抛异常
-            // 再闷声掉进「打开系统相册」的兜底——用户看到的就是「点了没反应/跳相册」
-            if (!file.exists()) {
-                Toast.makeText(this, "文件已被移动或删除", Toast.LENGTH_SHORT).show()
-                return
-            }
-            val uri = androidx.core.content.FileProvider.getUriForFile(
-                this, "$packageName.fileprovider", file
-            )
-            val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(
-                file.extension.lowercase()
-            ) ?: when (file.extension.lowercase()) {
-                "m4a" -> "audio/mp4"
-                "mp3" -> "audio/mpeg"
-                "opus" -> "audio/opus"
-                "flac" -> "audio/flac"
-                "aac" -> "audio/aac"
-                "wav" -> "audio/wav"
-                "webp" -> "image/webp"
-                else -> "*/*"
-            }
-            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, mime)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            // 视频/图片优先交给厂商相册（系统默认会路由到视频播放器）
-            if (mime.startsWith("video/") || mime.startsWith("image/")) {
-                for (pkg in galleryPackages) {
-                    try {
-                        val probe = Intent(viewIntent).setPackage(pkg)
-                        if (packageManager.resolveActivity(probe, 0) != null) {
-                            startActivity(probe)
-                            return
-                        }
-                    } catch (_: Exception) {
-                    }
-                }
-            }
-            startActivity(viewIntent)
-        } catch (e: Exception) {
-            // 没有查看器时退回打开系统相册
-            try {
-                val gallery = packageManager.getLaunchIntentForPackage("com.coloros.gallery3d")
-                    ?: packageManager.getLaunchIntentForPackage("com.android.gallery3d")
-                    ?: Intent(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_APP_GALLERY) }
-                startActivity(gallery)
-            } catch (_: Exception) {
-                Toast.makeText(this, "无法打开文件，请在文件管理器中查看", Toast.LENGTH_SHORT).show()
-            }
-        }
+    /** 打开文件所在的文件夹，实现在 [com.clipdownloader.util.FileActions] */
+    private fun openFolder(path: String) = FileActions.openFolder(this, path)
+
+    // ==================== 作品库 ====================
+
+    /** 「作品库」栏目：已下载的作品按封面卡片墙排列，点开进作品详情 */
+    private fun setupLibrary() {
+        libraryAdapter = LibraryAdapter(onOpen = { WorkDetailActivity.start(this, it.token) })
+        binding.viewLibrary.recyclerLibrary.layoutManager =
+            androidx.recyclerview.widget.GridLayoutManager(this, 2)
+        binding.viewLibrary.recyclerLibrary.adapter = libraryAdapter
+        (binding.viewLibrary.recyclerLibrary.itemAnimator as? androidx.recyclerview.widget.DefaultItemAnimator)
+            ?.supportsChangeAnimations = false
     }
 
     /**
-     * 打开下载到的文件夹（主页下载条目缩略图点击），按命中率依次尝试：
-     * 1. 系统文件 App（DocumentsUI）document URI —— 能直接定位到博主文件夹本身；
-     * 2. FileProvider 目录 VIEW，mime 用 vnd.android.document/directory 与
-     *    resource/folder 各试一次（后者是部分厂商文件管理器——含 OPPO——监听的旧约定）；
-     * 3. 系统文件夹选择器 + EXTRA_INITIAL_URI —— 全机型保证打开且定位到目标文件夹
-     *    （选择器界面可直接浏览该文件夹内容）。
+     * 重新归并作品库。归并要扫作品目录（补上记录里没登记的封面等文件），放到 IO 线程；
+     * 下载页的轮询刷新也会调到这里，所以记录与批次都没变、也不是刚切到这个页签时直接跳过。
+     *
+     * @param force 刚切到「作品库」页签：不管签名都重新归并（用户可能在文件管理器里动过文件）
      */
-    private fun openFolder(path: String) {
-        val dir = java.io.File(path)
-        if (!dir.exists()) dir.mkdirs()
-        val rel = path
-            .removePrefix("/storage/emulated/0/")
-            .removePrefix("/sdcard/")
-            .trimStart('/')
-        val docUri = if (rel.isNotBlank() && rel != path)
-            android.provider.DocumentsContract.buildDocumentUri(
-                "com.android.externalstorage.documents", "primary:$rel"
-            ) else null
-
-        // 1) DocumentsUI document URI
-        if (docUri != null) {
-            try {
-                startActivity(
-                    Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(
-                            docUri,
-                            android.provider.DocumentsContract.Document.MIME_TYPE_DIR
-                        )
-                        putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, docUri)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                )
-                return
-            } catch (_: Exception) {
+    private fun refreshLibrary(force: Boolean) {
+        if (!::libraryAdapter.isInitialized) return
+        val signature = recordStore.getRecords().joinToString(",") { "${it.batchId}:${it.itemCount}" } +
+            "|" + downloadManager.getBatches().joinToString(",") { "${it.batchId}:${it.phase}" }
+        if (!force && signature == libraryInputSignature) return
+        libraryInputSignature = signature
+        libraryJob?.cancel()
+        libraryJob = scope.launch {
+            val works = withContext(Dispatchers.IO) {
+                LibraryWorks.build(recordStore.getRecords(), File(prefs.getSavePath()))
             }
+            libraryAdapter.submit(works)
+            val has = works.isNotEmpty()
+            val l = binding.viewLibrary
+            l.recyclerLibrary.visibility = if (has) View.VISIBLE else View.GONE
+            l.layoutLibraryEmpty.visibility = if (has) View.GONE else View.VISIBLE
+            l.tvLibrarySummary.text = if (has) {
+                "共 ${works.size} 个作品 · ${works.sumOf { it.files.size }} 个文件"
+            } else "作品库还是空的"
         }
-        // 2) FileProvider 目录 VIEW（两种 mime，覆盖不同厂商文件管理器）
-        for (mime in listOf(
-            android.provider.DocumentsContract.Document.MIME_TYPE_DIR,
-            "resource/folder"
-        )) {
-            try {
-                val uri = androidx.core.content.FileProvider.getUriForFile(
-                    this, "$packageName.fileprovider", dir
-                )
-                startActivity(
-                    Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(uri, mime)
-                        putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, docUri)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                )
-                return
-            } catch (_: Exception) {
-            }
-        }
-        // 3) 系统文件夹选择器（保证可用，初始位置即目标文件夹）
-        try {
-            val picker = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-                if (docUri != null) {
-                    putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, docUri)
-                }
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(picker)
-            return
-        } catch (_: Exception) {
-        }
-        Toast.makeText(this, "未找到文件管理器，请手动查看：$path", Toast.LENGTH_LONG).show()
     }
 
     // ==================== 设置页 ====================
@@ -1658,6 +1582,8 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (::binding.isInitialized) refreshPermissionStatus()
+        // 刚从作品详情 / 相册 / 分享面板回来：磁盘上的文件可能变了而记录没变，作品库要重新归并
+        libraryInputSignature = ""
         refreshDownloadsList()
         // 兜底：下载在 IO 协程推进，事件通知万一丢失也能靠轮询保证列表实时
         uiHandler.removeCallbacks(uiRefreshRunnable)

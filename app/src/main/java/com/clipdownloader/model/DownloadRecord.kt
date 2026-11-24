@@ -75,6 +75,10 @@ class DownloadBatchState(
     /** 每个条目对应作品的发布时间（毫秒，0=未知；下载循环追加，与缩略图一一对应） */
     val itemPublishTimes = java.util.concurrent.CopyOnWriteArrayList<Long>()
 
+    /** 每个条目的作品文案、作者（下载循环追加，与缩略图一一对应；作品库按作品归并时用） */
+    val itemTitles = java.util.concurrent.CopyOnWriteArrayList<String>()
+    val itemAuthors = java.util.concurrent.CopyOnWriteArrayList<String>()
+
     /** 本批各条目的作品标识（写在文件名与目录名末尾），保存记录时清理同作品旧记录条目用 */
     val workMarkers = java.util.concurrent.CopyOnWriteArrayList<String>()
 
@@ -190,6 +194,10 @@ data class DownloadRecord(
     val publishTimeMs: Long = 0L,
     /** 每个条目对应作品的发布时间（毫秒，0=未知；与缩略图一一对应） */
     val publishTimes: List<Long> = emptyList(),
+    /** 每个条目的作品文案（与缩略图一一对应；旧记录没有，作品库从目录名 / 文件名还原） */
+    val itemTitles: List<String> = emptyList(),
+    /** 每个条目的作者（与缩略图一一对应；旧记录没有，作品库从路径还原） */
+    val itemAuthors: List<String> = emptyList(),
 ) {
     /**
      * 去掉指向 [paths] 里文件的条目（文件被覆盖、删除后同步记录用）。
