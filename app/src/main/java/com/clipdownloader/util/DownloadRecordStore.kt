@@ -108,6 +108,25 @@ class DownloadRecordStore private constructor(context: Context) {
         notifyChanged()
     }
 
+    /**
+     * 文件被覆盖、删除后同步记录：去掉记录里指向这些文件的条目（见 [DownloadRecord.withoutPaths]），
+     * 条目去光的记录整条移除。记录里没有这些文件时什么都不做。
+     */
+    fun withoutPaths(record: DownloadRecord, paths: Set<String>) {
+        if (record.filePaths.none { it in paths }) return
+        val trimmed = record.withoutPaths(paths)
+        if (trimmed == null) {
+            remove(record.batchId)
+            return
+        }
+        if (trimmed === record) return
+        val index = records.indexOfFirst { it.batchId == record.batchId }
+        if (index < 0) return
+        records[index] = trimmed
+        persist()
+        notifyChanged()
+    }
+
     fun clear() {
         records.clear()
         persist()

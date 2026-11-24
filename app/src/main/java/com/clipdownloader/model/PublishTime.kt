@@ -35,10 +35,10 @@ object PublishTime {
         else -> 0L
     }
 
-    /** 文件名用的发布日期前缀：`yyyyMMdd_`；未知为空串 */
-    fun filePrefix(ms: Long): String = if (ms <= 0) "" else format(DAY_FORMAT, ms).replace("-", "") + "_"
-
-    /** 展示用日期：`yyyy-MM-dd`；未知为空串 */
+    /**
+     * 展示与落盘用的日期：`yyyy-MM-dd`；未知为空串。
+     * 作品目录名以它开头（见 [WorkLayout.folderName]），记录卡片与作品库也用它。
+     */
     fun dateText(ms: Long): String = if (ms <= 0) "" else format(DAY_FORMAT, ms)
 
     /** 写入图片 EXIF 的拍摄时间：`yyyy:MM:dd HH:mm:ss`；未知为空串 */

@@ -9,6 +9,7 @@ import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import com.clipdownloader.model.MediaQuality
 import com.clipdownloader.model.ParsedMedia
+import com.clipdownloader.model.WorkLayout
 import com.clipdownloader.util.ThumbLoader
 
 /**
@@ -38,9 +39,13 @@ class MediaPickAdapter : RecyclerView.Adapter<MediaPickAdapter.VH>() {
     /** 当前选择的画质标签（null=未选，视频用各自最高档） */
     private var selectedLabel: String? = null
 
+    /** 音乐条目默认是否勾选（接设置「保存图集背景音乐」；关=默认不勾，想要可以手动勾上） */
+    var musicCheckedByDefault: () -> Boolean = { true }
+
     fun submitList(list: List<ParsedMedia>) {
+        // 先按作品的完整条目列表标好落盘序号：之后只下载勾中的条目时，序号也不会乱
         val map = LinkedHashMap<String, MutableList<ParsedMedia>>()
-        list.forEach { m ->
+        WorkLayout.assign(list).forEach { m ->
             val key = m.mediaId.ifBlank { m.rawShareText.ifBlank { m.title } }
             map.getOrPut(key) { mutableListOf() }.add(m)
         }
@@ -49,7 +54,7 @@ class MediaPickAdapter : RecyclerView.Adapter<MediaPickAdapter.VH>() {
                 title = items.firstOrNull()?.title?.ifBlank { items.firstOrNull()?.author.orEmpty() }
                     ?.ifBlank { "作品" }.orEmpty(),
                 items = items,
-                checked = BooleanArray(items.size) { true }
+                checked = BooleanArray(items.size) { i -> !items[i].isMusic || musicCheckedByDefault() }
             )
         }
         notifyDataSetChanged()

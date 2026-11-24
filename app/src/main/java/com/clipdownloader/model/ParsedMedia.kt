@@ -77,7 +77,12 @@ data class ParsedMedia(
     /** 单直链媒体的体积（无画质档时用，探测补齐），未知为 0 */
     val sizeBytes: Long = 0,
     /** 作品发布时间（毫秒时间戳），未知为 0。同一作品的多个媒体（图集各张、实况图的图与视频）共用 */
-    val publishTimeMs: Long = 0
+    val publishTimeMs: Long = 0,
+    /** 作品内序号（1 起；0 = 不编号或未标注）：图片、实况按出现顺序编号；多视频作品的各视频依次编号。
+     *  解析后由 [WorkLayout.assign] 按作品的完整条目列表标注，落盘文件名用 */
+    val partNo: Int = 0,
+    /** 实况图的一半（静态原图或动态视频）：两者共用同一个 [partNo]，文件名分别为 `_NN_cover.*` 与 `_NN.mp4` */
+    val livePair: Boolean = false
 )
 
 data class DownloadResult(
@@ -90,5 +95,8 @@ data class DownloadResult(
     /** 下载后探测到的真实媒体时长（毫秒），用于更新下载栏时长角标 */
     val durationMs: Long = 0,
     /** 本地已有该作品（文件名内置标识命中），未下载直接跳过 */
-    val skippedExisting: Boolean = false
+    val skippedExisting: Boolean = false,
+    /** 本条目落盘的其它文件（视频封面、实况图的静态原图），不占条目位；
+     *  覆盖模式下它们和主文件一样属于「本次新文件」，不能被当成旧文件删掉 */
+    val extraPaths: List<String> = emptyList()
 )

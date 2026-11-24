@@ -75,8 +75,11 @@ class DownloadBatchState(
     /** 每个条目对应作品的发布时间（毫秒，0=未知；下载循环追加，与缩略图一一对应） */
     val itemPublishTimes = java.util.concurrent.CopyOnWriteArrayList<Long>()
 
-    /** 本批各条目的作品标识（文件名内嵌 _m<hash>_，跳过下载时同作品旧记录替换判断用） */
+    /** 本批各条目的作品标识（写在文件名与目录名末尾），保存记录时清理同作品旧记录条目用 */
     val workMarkers = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+    /** 本批各作品的落盘命名（作品标识 → 命名），同作品的条目共用；只在下载循环线程里读写 */
+    val workNamings = HashMap<String, WorkNaming>()
 
     /** 博主主页下载时的子文件夹（按博主名归档） */
     @Volatile var subFolder: String? = null
@@ -128,6 +131,15 @@ class DownloadBatchState(
         get() = phase == Phase.PARSING || phase == Phase.DOWNLOADING
 }
 
+/** 一个作品在本批的落盘命名：文案取该作品第一个非音乐条目，同作品所有文件共用（规则见 WorkLayout） */
+data class WorkNaming(
+    val desc: String,
+    val publishTimeMs: Long,
+    val folderName: String,
+    /** 覆盖重下时本地已有该作品的文件：新文件存进它原来的作品目录（原地替换），为空按规则新建 */
+    val dir: java.io.File? = null
+)
+
 /** 下载历史记录（持久化到 JSON 文件） */
 data class DownloadRecord(
     val batchId: Long,
@@ -178,4 +190,46 @@ data class DownloadRecord(
     val publishTimeMs: Long = 0L,
     /** 每个条目对应作品的发布时间（毫秒，0=未知；与缩略图一一对应） */
     val publishTimes: List<Long> = emptyList(),
-)
+) {
+    /**
+     * 去掉指向 [paths] 里文件的条目（文件被覆盖、删除后同步记录用）。
+     * 没有要去的条目返回自身；文件条目全部去光返回 null（调用方应整条移除记录）。
+     * 各条目列表（路径、封面、类型、时长、大小、发布时间、状态）按下标一一对应，一起裁剪；
+     * 空路径（下载失败的条目）不算文件，也不删。
+     */
+    fun withoutPaths(paths: Set<String>): DownloadRecord? {
+        // 空路径是下载失败的条目，不算文件，也不在裁剪范围内
+        val drop = paths.filter { it.isNotBlank() }.toSet()
+        val oldPaths = filePaths
+        if (oldPaths.none { it in drop }) return this
+        val keep = oldPaths.indices.filter { oldPaths[it] !in drop }
+        val first = keep.firstOrNull { oldPaths[it].isNotBlank() } ?: return null
+        fun <T> pick(list: List<T>): List<T> = keep.mapNotNull { list.getOrNull(it) }
+        val newPaths = keep.map { oldPaths[it] }
+        val skipped = pick(itemSkipped)
+        return copy(
+            filePaths = newPaths,
+            filePath = oldPaths[first],
+            fileName = oldPaths[first].substringAfterLast('/'),
+            coverUrl = coverUrls.getOrNull(first).orEmpty(),
+            coverUrls = pick(coverUrls),
+            kind = kinds.getOrNull(first)?.takeIf { it.isNotBlank() } ?: kind,
+            durationMs = durations.getOrNull(first) ?: durationMs,
+            publishTimeMs = publishTimes.getOrNull(first) ?: publishTimeMs,
+            publishTimes = pick(publishTimes),
+            kinds = pick(kinds),
+            durations = pick(durations),
+            sizes = pick(sizes),
+            itemSkipped = skipped,
+            itemErrors = pick(itemErrors),
+            // 整批大小 / 成功数 / 跳过数都按剩下的条目重算
+            fileSize = newPaths.filter { it.isNotBlank() }.sumOf { runCatching { java.io.File(it).length() }.getOrDefault(0L) },
+            itemCount = newPaths.size,
+            skippedCount = skipped.count { it },
+            okCount = okCount?.let { newPaths.indices.count { i -> newPaths[i].isNotBlank() && !skipped[i] } },
+            // 还留着文件条目的记录就是有效记录
+            success = true,
+            error = pick(itemErrors).firstOrNull { !it.isNullOrBlank() }
+        )
+    }
+}

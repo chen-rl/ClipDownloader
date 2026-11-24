@@ -580,7 +580,7 @@
                         <TextView
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:text="开=按平台/博主名分文件夹保存；关=全部直接存到根目录"
+                            android:text="开=按平台/博主名分文件夹保存；关=全部直接存到根目录。每个作品单独一个文件夹，文件夹名以发布日期开头"
                             android:textSize="12sp"
                             android:textColor="?attr/colorOnSurfaceVariant"
                             android:layout_marginTop="2dp" />
@@ -589,6 +589,44 @@
 
                     <com.google.android.material.materialswitch.MaterialSwitch
                         android:id="@+id/switch_platform_master"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+
+                </LinearLayout>
+
+                <!-- 图集背景音乐 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:padding="12dp"
+                    android:gravity="center_vertical">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="保存图集背景音乐"
+                            android:textSize="16sp"
+                            android:textColor="?attr/colorOnSurface" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="开=图集作品的背景音乐另存为「…_bgm」文件；关=不下载（首页解析列表里的音乐默认不勾选，手动勾上仍会下载）"
+                            android:textSize="12sp"
+                            android:textColor="?attr/colorOnSurfaceVariant"
+                            android:layout_marginTop="2dp" />
+
+                    </LinearLayout>
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/switch_save_bgm"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
 

@@ -21,6 +21,13 @@ class PreferencesManager(context: Context) {
         prefs.edit().putBoolean("platform_folder_enabled", enabled).apply()
     }
 
+    // === 图集背景音乐（默认关）：关=没有逐项勾选的下载入口不下载音乐条目，首页勾选列表里默认不勾 ===
+    fun isSaveBgm(): Boolean = prefs.getBoolean("save_bgm", false)
+
+    fun setSaveBgm(enabled: Boolean) {
+        prefs.edit().putBoolean("save_bgm", enabled).apply()
+    }
+
     // === 解析模式：本地解析（开）/ 云端解析（关，云端失败不回落本地） ===
     fun isLocalParse(): Boolean = prefs.getBoolean("local_parse", true)
     fun setLocalParse(local: Boolean) {

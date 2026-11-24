@@ -508,7 +508,15 @@ class DouyinUserParser {
                         .replace("/playwm/", "/play/")
                     if (staticUrl.isNotBlank()) works.add(base().copy(imageUrl = staticUrl))
                     if (liveUrl.isNotBlank() && !isAudioUrl(liveUrl)) {
-                        works.add(base().copy(videoUrl = liveUrl, duration = LIVE_PHOTO_ESTIMATE_MS))
+                        // 封面填静态原图地址：与上面的图片条目配成一对实况（WorkLayout.assign 据此让
+                        // 动态视频与静态原图共用序号），与单作品解析 DouyinParser 的标法一致
+                        works.add(
+                            base().copy(
+                                videoUrl = liveUrl,
+                                coverUrl = staticUrl.ifBlank { null },
+                                duration = LIVE_PHOTO_ESTIMATE_MS
+                            )
+                        )
                     }
                 }
                 return@forEachIndexed
@@ -520,7 +528,10 @@ class DouyinUserParser {
                 .ifBlank { resolvePlayUrl(video?.optJSONObject("play_addr_264")) }
             if (playUrl.isBlank() || isAudioUrl(playUrl)) return@forEachIndexed
             val best = sorted.firstOrNull()?.url?.takeIf { it.startsWith("http") } ?: playUrl
-            val cover = video?.optJSONObject("cover")?.optJSONArray("url_list")?.optString(0)?.ifBlank { null }
+            // 封面优先取原始封面 origin_cover（清晰），接口没给再退回缩略图 cover
+            fun coverOf(key: String): String? = video?.optJSONObject(key)?.optJSONArray("url_list")
+                ?.optString(0)?.takeIf { it.startsWith("http") }
+            val cover = coverOf("origin_cover") ?: coverOf("cover")
             val duration = video?.optLong("duration", 0L) ?: 0L
             works.add(
                 base().copy(

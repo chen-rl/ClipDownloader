@@ -257,6 +257,8 @@ class MainActivity : AppCompatActivity() {
         binding.viewHome.btnParsedAll.setOnClickListener {
             pickAdapter.setAll(pickAdapter.checkedGroupCount() != pickAdapter.groupCount())
         }
+        // 音乐条目默认勾不勾，跟设置里的「保存图集背景音乐」走
+        pickAdapter.musicCheckedByDefault = { prefs.isSaveBgm() }
 
         binding.viewHome.recyclerParsed.layoutManager = LinearLayoutManager(this)
         binding.viewHome.recyclerParsed.adapter = pickAdapter
@@ -713,12 +715,16 @@ class MainActivity : AppCompatActivity() {
                 val todo = listing.videos.filter {
                     it.mediaId !in doneIds && downloadManager.workMarkerOf(it) !in existingMarkers
                 }
-                profileTotalWorks = listing.videos.size
-                profileSkippedWorks = listing.videos.size - todo.size
+                // 作品数按作品 ID 去重：实况图在列表里拆成「图片 + 视频」两个条目，不能拿条目数当作品数
+                fun workKeyOf(m: com.clipdownloader.model.ParsedMedia) =
+                    m.mediaId.ifBlank { m.rawShareText.ifBlank { m.title } }
+                val workCount = listing.videos.map { workKeyOf(it) }.distinct().size
+                profileTotalWorks = workCount
+                profileSkippedWorks = workCount - todo.map { workKeyOf(it) }.distinct().size
                 if (todo.isEmpty()) {
-                    h.tvProfileStatus.text = "${listing.author}：没有新作品（已下载 ${listing.videos.size} 个）"
+                    h.tvProfileStatus.text = "${listing.author}：没有新作品（已下载 $workCount 个）"
                     h.cardProfileResult.visibility = View.VISIBLE
-                    h.tvProfileSummary.text = "共 ${listing.videos.size} 个作品 · 已全部下载过 · 没有新作品"
+                    h.tvProfileSummary.text = "共 $workCount 个作品 · 已全部下载过 · 没有新作品"
                     h.layoutProfileQuality.visibility = View.GONE
                     profileWorks = emptyList()
                     profileAuthor = listing.author
@@ -1128,6 +1134,12 @@ class MainActivity : AppCompatActivity() {
         s.switchPlatformMaster.isChecked = prefs.isPlatformFoldersEnabled()
         s.switchPlatformMaster.setOnCheckedChangeListener { _, checked ->
             prefs.setPlatformFoldersEnabled(checked)
+        }
+
+        // 图集背景音乐（默认不存）
+        s.switchSaveBgm.isChecked = prefs.isSaveBgm()
+        s.switchSaveBgm.setOnCheckedChangeListener { _, checked ->
+            prefs.setSaveBgm(checked)
         }
 
         // 微博解析端开关（仅首选通道=本地解析时显示）：开=PC 端，关=移动端

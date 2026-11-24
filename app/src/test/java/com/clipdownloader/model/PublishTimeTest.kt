@@ -1,7 +1,6 @@
 package com.clipdownloader.model
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -39,22 +38,12 @@ class PublishTimeTest {
     }
 
     @Test
-    fun filePrefix_isPublishDatePlusUnderscore() {
-        assertEquals("", PublishTime.filePrefix(0))
-        assertEquals("", PublishTime.filePrefix(-1))
-        val prefix = PublishTime.filePrefix(ms)
-        assertEquals(fmt("yyyyMMdd", ms) + "_", prefix)
-        assertTrue("前缀应为 8 位日期加下划线: $prefix", prefix.matches(Regex("\\d{8}_")))
-    }
-
-    @Test
     fun dateText_andExifStamp_useLocalTimeZone() {
         assertEquals("", PublishTime.dateText(0))
         assertEquals("", PublishTime.exifStamp(0))
         assertEquals(fmt("yyyy-MM-dd", ms), PublishTime.dateText(ms))
         assertEquals(fmt("yyyy:MM:dd HH:mm:ss", ms), PublishTime.exifStamp(ms))
         if (TimeZone.getDefault().getOffset(ms) == 8 * 3_600_000) {
-            assertEquals("20261123_", PublishTime.filePrefix(ms))
             assertEquals("2026-11-23", PublishTime.dateText(ms))
             assertEquals("2026:11:23 16:45:02", PublishTime.exifStamp(ms))
         }

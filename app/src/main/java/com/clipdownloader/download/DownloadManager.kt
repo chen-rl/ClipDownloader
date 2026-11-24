@@ -21,6 +21,8 @@ import com.clipdownloader.model.DownloadResult
 import com.clipdownloader.model.ParsedMedia
 import com.clipdownloader.model.Platform
 import com.clipdownloader.model.PublishTime
+import com.clipdownloader.model.WorkLayout
+import com.clipdownloader.model.WorkNaming
 import com.clipdownloader.util.DownloadRecordStore
 import com.clipdownloader.util.PreferencesManager
 import com.clipdownloader.util.supportsPlatform
@@ -38,9 +40,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -196,11 +195,11 @@ private const val LINE_BREAK = "\n"
         }
     }
 
-    /** 下载预解析好的媒体列表（首页勾选后下载） */
+    /** 下载预解析好的媒体列表（首页勾选后下载）。条目在解析时已按作品完整列表标好序号 */
     fun enqueueMediaList(mediaList: List<ParsedMedia>, platform: Platform, rawText: String) {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
-                processAndDownload(rawText, platform, preParsed = mediaList)
+                processAndDownload(rawText, platform, preParsed = mediaList, preNumbered = true)
             } catch (e: Exception) {
                 LogFile.e(TAG, "勾选下载异常", e)
             }
@@ -263,6 +262,8 @@ private const val LINE_BREAK = "\n"
      * 此时的「覆盖旧文件」开=下载成功后删除同作品旧文件及对应旧记录，关=另存新文件。
      *
      * @param forceRedownload 忽略「本地已存在」检测（记录「重下」按钮入口）
+     * @param preNumbered [preParsed] 里的条目已按作品完整列表标好序号（首页勾选列表），
+     *        不再重新编号，也不再过滤背景音乐——勾上的都是用户明确要的
      */
     suspend fun processAndDownload(
         shareText: String,
@@ -273,7 +274,8 @@ private const val LINE_BREAK = "\n"
         isProfile: Boolean = false,
         author: String? = null,
         avatarUrl: String? = null,
-        forceRedownload: Boolean = false
+        forceRedownload: Boolean = false,
+        preNumbered: Boolean = false
     ): List<DownloadResult> {
         val batch = DownloadBatchState(idSeq.getAndIncrement(), shareText, platform, isProfile = isProfile)
         batch.subFolder = subFolder
@@ -299,15 +301,28 @@ private const val LINE_BREAK = "\n"
         // 兜底：循环体内任何意外异常都不能让批次永远卡在「下载中」——
         // 标记失败、收尾通知、写历史记录，ticker 才能随 isActive=false 停止
         try {
+        // 背景音乐默认不存：没有逐项勾选的入口（剪贴板自动下载、主页批量、重新下载）
+        // 直接丢掉音乐条目；首页勾选列表里手动勾上的音乐是用户明确要的，照常下载
+        val dropMusic = !preNumbered && !prefs.isSaveBgm()
+        var onlyMusic = false
         val mediaList = try {
             val parsed = preParsed ?: parseMedia(shareText, platform)
-            // 日志主线：一条总量 + 每个媒体一行简写（完整 URL 只在失败详情里出现）
+            // 日志主线：一条总量 + 每个媒体一行简写（完整 URL 只在失败详情里出现；
+            // 末尾带作品页链接，排查时能对上是哪个作品）
             LogFile.d(TAG, "解析结果：${parsed.size} 个媒体")
             parsed.forEachIndexed { i, m ->
                 val u = (m.videoUrl ?: m.imageUrl)
-                LogFile.d(TAG, "媒体[$i] ${if (m.videoUrl != null) "视频" else "图片"} · ${u?.let { com.clipdownloader.util.LogFile.briefUrl(it, 0) } ?: "无URL"}")
+                LogFile.d(
+                    TAG,
+                    "媒体[$i] ${if (m.videoUrl != null) "视频" else "图片"} · " +
+                        "${u?.let { com.clipdownloader.util.LogFile.briefUrl(it, 0) } ?: "无URL"}" +
+                        " · 作品 ${m.originalUrl.ifBlank { m.rawShareText }.take(80)}"
+                )
             }
-            parsed
+            onlyMusic = parsed.isNotEmpty() && parsed.all { it.isMusic }
+            parsed.filterNot { dropMusic && it.isMusic }
+                // 落盘序号要按作品的完整条目列表来排
+                .let { if (preNumbered) it else WorkLayout.assign(it) }
         } catch (e: Exception) {
             LogFile.e(TAG, "解析失败", e)
             emptyList()
@@ -323,6 +338,8 @@ private const val LINE_BREAK = "\n"
         if (mediaList.isEmpty()) {
             val reason = if (lastParseError.isNotBlank())
                 "解析全部失败（已尝试全部通道）：" + LINE_BREAK + lastParseError
+            else if (onlyMusic && dropMusic)
+                "只解析到图集背景音乐（设置里「保存图集背景音乐」已关闭）"
             else
                 "未能从 ${platform.displayName} 链接中获取媒体资源"
             batch.markFailed(reason)
@@ -358,18 +375,38 @@ private const val LINE_BREAK = "\n"
         var cancelled = false
 
         // 重复视频处理：「重复视频重新下载」开=不跳过本地已有作品直接重下；
-        // 「覆盖旧文件」仅在重下生效时起作用（覆盖并删旧文件 / 另存新文件）。
-        // 无论覆盖还是另存，历史记录都只留最新一条（saveRecord 统一清同作品旧记录）
+        // 「覆盖旧文件」仅在重下生效时起作用（整批结束后清掉同作品的旧文件 / 另存新文件）。
+        // 无论覆盖还是另存，同作品的条目只留在最新一条记录里（saveRecord 统一处理）
         val redownloadDuplicates = forceRedownload || prefs.isRedownloadDuplicates()
         val overwrite = redownloadDuplicates && prefs.isRedownloadOverwrite()
-        // 本批各条目的作品标识（文件名内嵌），保存记录时替换同作品旧记录用
+        // 本批各条目的作品标识（写进文件名与目录名），保存记录时清理同作品旧记录用
         mediaList.forEach { media ->
             workMarkerOf(media).takeIf { it.isNotBlank() }?.let { batch.workMarkers.add(it) }
         }
 
-        // 本地已有识别：扫描保存目录里文件名内置的作品标识（_m<hash>_）。
+        // 本地已有识别：扫描保存目录里文件名内置的作品标识（新旧版文件名都认）。
         // 靠的是实际文件而非历史记录——记录被删后只要文件还在就不会重复下载
-        val existingFiles = if (redownloadDuplicates) emptyMap() else existingMarkerFiles()
+        val existingFiles = existingMarkerFiles()
+
+        // 每个作品一个目录：文案与发布时间取该作品第一个非音乐条目，
+        // 同作品的所有文件（含背景音乐）共用这一套命名。
+        // 本地已有该作品的文件时，新文件存进它原来的作品目录——覆盖重下是原地替换
+        // （从别的入口重下一个作品，不会把博主归档目录拆散）；平时补下同一作品缺的文件
+        // （比如后来才打开背景音乐）也落在同一个目录。只有「另存新文件」模式才按规则另建目录
+        val reuseExistingDir = overwrite || !redownloadDuplicates
+        mediaList.forEach { media ->
+            if (media.isMusic) return@forEach
+            val token = workMarkerOf(media)
+            batch.workNamings.getOrPut(token) {
+                val naming = namingOf(media, token)
+                if (!reuseExistingDir) naming
+                else existingDirOf(existingFiles[token].orEmpty(), token)?.let { naming.copy(dir = it) } ?: naming
+            }
+        }
+        // 本批里一起下载的实况静态原图：它们的动态视频不再另存封面（否则同一张图存两份）
+        val liveStills = mediaList.filter { it.livePair && !it.imageUrl.isNullOrBlank() }
+            .map { workMarkerOf(it) + "#" + it.partNo }
+            .toSet()
         var skippedCount = 0
 
         mediaList.forEachIndexed { index, media ->
@@ -406,7 +443,7 @@ private const val LINE_BREAK = "\n"
             // 共用作品标识，上次图片项下载失败时本地只有视频文件，
             // 图片条目要照常下载补齐，不能拿视频文件充数（缩略图/点击/大小全错且永远补不上）
             val marker = workMarkerOf(media)
-            val keep = pickExistingFile(
+            val keep = if (redownloadDuplicates) null else pickExistingFile(
                 existingFiles[marker].orEmpty().filter { it.isNotBlank() },
                 media, marker, index, total
             )
@@ -451,7 +488,10 @@ private const val LINE_BREAK = "\n"
                 media.title.ifBlank { null }
             )
             val result = try {
-                downloadMediaItem(batch, media, index, total).also { r ->
+                downloadMediaItem(
+                    batch, media, index, total,
+                    withCover = !liveStills.contains(workMarkerOf(media) + "#" + media.partNo)
+                ).also { r ->
                     // 失败详情在这行体现（错误原因已带 HTTP 状态），成功则由保存行体现
                     if (!r.success) LogFile.w(TAG, "媒体[$index] 失败：${r.error}")
                 }
@@ -467,12 +507,6 @@ private const val LINE_BREAK = "\n"
                         runCatching { File(it).length() }.getOrDefault(0L)
                     } ?: 0L
                 }
-            }
-            // 覆盖模式：新文件落盘成功后清掉同作品的旧文件与对应旧记录
-            // （失败不动旧文件，避免两头空）；保留集用整批已落盘路径——
-            // 实况图一次存「视频+图片」两个同标识新文件，都不能误删
-            if (overwrite && result.success && !result.skippedExisting) {
-                deleteOldMarkerFiles(marker, batch.itemPaths.toList())
             }
             // 下载后探测到的真实时长回填（实况视频/接口没给时长的视频项）。
             // 除了 itemDurations（多媒体网格角标），单视频下载栏角标用的是
@@ -495,6 +529,10 @@ private const val LINE_BREAK = "\n"
             cancelNotification(progressId)
             return results
         }
+
+        // 覆盖模式：整批顺利结束才清同作品的旧文件——图集 / 实况的每个条目都存好了再动旧文件，
+        // 中途有失败或取消时旧文件原样保留，避免两头空
+        if (overwrite) finishOverwrite(batch, results)
 
         cancelNotification(progressId)
         batch.markCompleted(results)
@@ -600,39 +638,36 @@ private const val LINE_BREAK = "\n"
     }
 
     /**
-     * 同作品旧记录自动清理：保证同作品只留最新一条记录。
-     * 覆盖重下、另存重下、纯跳过（本地已存在）重下都会清理——用户明确要求
-     * 「重新下载只保留一条记录」，旧记录对应的旧文件保留在磁盘上，只是不再
-     * 在记录列表里单独占一条。
+     * 同作品的条目只留在最新一条记录里（覆盖重下、另存重下、纯跳过重下都会走到这里）。
+     * 旧记录里属于本批作品的条目移除，其余作品的条目保留——一批多个作品的记录
+     * （比如主页批量）不会因为其中一个作品重下而整条消失；条目去光的记录才整条移除。
+     * 旧文件是否还在磁盘上由覆盖模式的收尾逻辑决定，这里只管记录。
      *
      * 判据用 batch.workMarkers（解析阶段就算好的作品标识，跳过/新下载条目都有），
-     * 不用 record.filePaths——跳过的条目路径是已有文件、新下载的是新文件，
-     * 混在一起会让「按路径含标识匹配旧记录」误删/漏删。mediaId 做辅助通道。
+     * 不用 record.filePaths——跳过的条目路径是已有文件、新下载的是新文件，混在一起会误判。
      * 安全闸：本批至少有一个成功条目（含跳过）才清理——纯失败批次没有可用文件，
-     * 删旧记录会两头空。主页记录与普通记录互不越界（isProfile 相同才比较）。
+     * 动旧记录会两头空。主页记录与普通记录互不越界（isProfile 相同才比较）。
      */
     private fun removeReplacedRecords(record: DownloadRecord, batch: DownloadBatchState) {
         try {
             if (batch.workMarkers.isEmpty()) return
             // 纯失败批次不清理：旧记录对应着仅存的可用文件
-            val anySuccess = batch.results.any { it.success }
-            if (!anySuccess) return
-            val markerRegexes = batch.workMarkers.map { Regex("_m${it}_") }
-            val removed = recordStore.getRecords().filter { old ->
-                old.batchId != record.batchId &&
-                    old.isProfile == record.isProfile &&
-                    (
-                        // 通道一：作品 ID 直接命中（B站 BV 号/抖音 aweme id 等）
-                        (record.mediaId.isNotBlank() && old.mediaId == record.mediaId) ||
-                        // 通道二：旧记录文件名里带本批作品标识
-                        old.filePaths.any { p ->
-                            p.isNotBlank() && markerRegexes.any { it.containsMatchIn(p) }
-                        }
-                    )
-            }
-            removed.forEach { recordStore.remove(it.batchId) }
-            if (removed.isNotEmpty()) {
-                LogFile.d(TAG, "同作品旧记录已清理：${removed.size} 条（batchId=${removed.joinToString { it.batchId.toString() }}）")
+            if (batch.results.none { it.success }) return
+            val markers = batch.workMarkers.toSet()
+            var touched = 0
+            recordStore.getRecords()
+                .filter { old -> old.batchId != record.batchId && old.isProfile == record.isProfile }
+                .forEach { old ->
+                    val sameWork = old.filePaths
+                        .filter { p -> p.isNotBlank() && WorkLayout.tokenOf(p.substringAfterLast('/')) in markers }
+                        .toSet()
+                    if (sameWork.isNotEmpty()) {
+                        recordStore.withoutPaths(old, sameWork)
+                        touched++
+                    }
+                }
+            if (touched > 0) {
+                LogFile.d(TAG, "同作品的旧记录条目已清理：涉及 $touched 条旧记录")
             }
         } catch (e: Exception) {
             LogFile.w(TAG, "清理被替换的旧记录失败: ${e.message}")
@@ -1061,46 +1096,54 @@ private const val LINE_BREAK = "\n"
             return winner.takeUnless { it.first == "__none__" }
         }
 
+        // 按作品处理：同一作品的条目要么全带直链直接采用，要么整个作品重新解析一次。
+        // 不能按条目判断——图集作品里图片条目没有 videoUrl，逐条送云端重解析会把整个作品
+        // 再解析一遍，和列表自带的视频条目各算一份（同一作品落盘两份，还带回背景音乐）
         val results = mutableListOf<ParsedMedia>()
-        val pending = ArrayDeque(todo)
-        val total = todo.size
+        val pending = ArrayDeque<List<ParsedMedia>>()
+        todo.groupBy { it.mediaId.ifBlank { it.rawShareText.ifBlank { it.title } } }
+            .values.forEach { pending.add(it) }
+        val total = pending.size
         var attempted = 0
         var okCount = 0
         val maxRounds = 3
+
+        /** 重解析的结果归属到作品列表里的那个作品：作品 ID 以列表为准，文案 / 作者 / 发布时间
+         *  缺哪项补哪项。同一作品不管从哪个通道解析出来标识都一致（目录名、去重都靠它） */
+        fun belongToWork(item: ParsedMedia, head: ParsedMedia): ParsedMedia = item.copy(
+            mediaId = head.mediaId.ifBlank { item.mediaId },
+            title = item.title.ifBlank { head.title },
+            author = item.author.ifBlank { head.author },
+            publishTimeMs = if (item.publishTimeMs > 0) item.publishTimeMs else head.publishTimeMs
+        )
 
         for (round in 1..maxRounds) {
             if (pending.isEmpty()) break
             var roundProgress = 0
             val snapshot = pending.toList()
-            for (item in snapshot) {
-                // 列表已带直链的作品（抖音/快手）直接采用，无需再解析
-                if (!item.videoUrl.isNullOrBlank()) {
-                    attempted++
-                    pending.remove(item)
-                    results.add(item)
-                    okCount++
-                    roundProgress++
-                    onProgress(attempted, okCount, total)
-                    continue
-                }
+            for (work in snapshot) {
+                val head = work.first()
+                // 列表条目全带直链的作品（抖音 / 快手）直接采用，无需再解析
+                var media =
+                    if (work.all { !it.videoUrl.isNullOrBlank() || !it.imageUrl.isNullOrBlank() }) work
+                    else emptyList()
                 // 云通道并发竞速；全部失败才回落本地解析器
-                var media = raceCloud(item)?.second ?: emptyList()
+                if (media.isEmpty()) media = raceCloud(head)?.second ?: emptyList()
                 if (media.isEmpty() && hasLocal) {
-                    media = tryChannel("local", item)
+                    media = tryChannel("local", head)
                 }
                 // B站云端通道不带画质档（video_fullinfo 恒空）：本地解析补一档，
                 // 否则画质滑块会消失
                 if (media.isNotEmpty() && platform == Platform.BILIBILI &&
                     hasLocal && media.all { it.qualities.isEmpty() }
                 ) {
-                    val enriched = tryChannel("local", item)
+                    val enriched = tryChannel("local", head)
                     if (enriched.isNotEmpty() && enriched.any { it.qualities.isNotEmpty() }) media = enriched
                 }
                 attempted++
                 if (media.isNotEmpty()) {
-                    pending.remove(item)
-                    // 二次解析（云端通道）不回传发布时间：沿用作品列表条目带来的，替换时不能丢
-                    results.addAll(media.map { if (it.publishTimeMs > 0) it else it.copy(publishTimeMs = item.publishTimeMs) })
+                    pending.remove(work)
+                    results.addAll(media.map { belongToWork(it, head) })
                     okCount++
                     roundProgress++
                     // 正常间隔：给目标服务留出喘息，也避免瞬间并发触发风控
@@ -1109,12 +1152,12 @@ private const val LINE_BREAK = "\n"
                 onProgress(attempted, okCount, total)
             }
             if (roundProgress == 0) {
-                LogFile.w(TAG, "主页逐作解析：第 $round 轮零进展，停止重试（剩 ${pending.size} 个）")
+                LogFile.w(TAG, "主页逐作解析：第 $round 轮零进展，停止重试（剩 ${pending.size} 个作品）")
                 break
             }
             if (pending.isNotEmpty()) delay(2_000)
         }
-        LogFile.d(TAG, "主页逐作解析完成：成功 $okCount/$total，媒体 ${results.size} 个")
+        LogFile.d(TAG, "主页逐作解析完成：成功 $okCount/$total 个作品，媒体 ${results.size} 个")
         results to okCount
     }
 
@@ -1124,7 +1167,8 @@ private const val LINE_BREAK = "\n"
         batch: DownloadBatchState,
         media: ParsedMedia,
         index: Int,
-        total: Int
+        total: Int,
+        withCover: Boolean = true
     ): DownloadResult = withContext(Dispatchers.IO) {
         val videoUrl = media.videoUrl?.takeIf { it.isNotBlank() }
         val imageUrl = media.imageUrl?.takeIf { it.isNotBlank() }
@@ -1136,7 +1180,7 @@ private const val LINE_BREAK = "\n"
         }
 
         when {
-            videoUrl != null -> downloadVideoItem(batch, media, videoUrl, index, total)
+            videoUrl != null -> downloadVideoItem(batch, media, videoUrl, index, total, withCover)
             imageUrl != null -> downloadImageItem(batch, media, imageUrl, index, total)
             else -> DownloadResult(
                 success = false,
@@ -1148,8 +1192,7 @@ private const val LINE_BREAK = "\n"
 
     /**
      * 平台侧实况图（小红书/抖音图集里的 live 图）：
-     * → 分别保存「视频 (.mp4) + 图片 (.jpg)」两份独立文件
-     *   不打包 Motion Photo，避免用户混淆
+     * → 分别保存「视频 (`_NN.mp4`) + 静态原图 (`_NN_cover.jpg`)」两份，同序号配对，不打包 Motion Photo
      */
     private fun downloadLivePhotoItem(
         batch: DownloadBatchState,
@@ -1159,7 +1202,8 @@ private const val LINE_BREAK = "\n"
         index: Int,
         total: Int
     ): DownloadResult {
-        val dir = ensureDir(media.platform, batch.subFolder)
+        val dir = workDirOf(batch, media)
+        val stem = WorkLayout.numbered(fileStem(batch, media), media.partNo)
         val tmpVideo = File(context.cacheDir, "cd_live_v_${System.currentTimeMillis()}_$index.mp4")
         val tmpCover = File(context.cacheDir, "cd_live_c_${System.currentTimeMillis()}_$index.tmp")
 
@@ -1184,10 +1228,12 @@ private const val LINE_BREAK = "\n"
         var savedPath: String? = null
         var savedName: String = ""
         var savedDuration: Long = 0L
+        // 同一次落盘的另一个文件（主文件之外的那个），覆盖模式的保留集要用
+        val extraPaths = mutableListOf<String>()
 
         // 保存视频 (MP4)
         if (videoOk) {
-            val videoFile = uniqueFile(dir, buildFileName(media, index, total, "mp4", suffix = "_live"))
+            val videoFile = uniqueFile(dir, "$stem.mp4")
             if (moveFile(tmpVideo, videoFile)) {
                 stampPublishTime(videoFile, media)
                 scanFile(videoFile)
@@ -1196,6 +1242,8 @@ private const val LINE_BREAK = "\n"
                     savedPath = videoFile.absolutePath
                     savedName = videoFile.name
                     savedDuration = probeMediaDuration(videoFile)
+                } else {
+                    extraPaths.add(videoFile.absolutePath)
                 }
             } else {
                 tmpVideo.delete()
@@ -1204,10 +1252,10 @@ private const val LINE_BREAK = "\n"
             tmpVideo.delete()
         }
 
-        // 保存原图
+        // 保存原图：与视频同序号，带 _cover
         if (coverOk) {
             val ext = guessImageExt(coverUrl, tmpCover)
-            val imgFile = uniqueFile(dir, buildFileName(media, index, total, ext, suffix = "_live"))
+            val imgFile = uniqueFile(dir, "$stem${WorkLayout.COVER_SUFFIX}.$ext")
             if (moveFile(tmpCover, imgFile)) {
                 stampPublishTime(imgFile, media)
                 scanFile(imgFile)
@@ -1215,6 +1263,8 @@ private const val LINE_BREAK = "\n"
                 if (savedPath == null) {
                     savedPath = imgFile.absolutePath
                     savedName = imgFile.name
+                } else {
+                    extraPaths.add(imgFile.absolutePath)
                 }
             } else {
                 tmpCover.delete()
@@ -1231,7 +1281,8 @@ private const val LINE_BREAK = "\n"
                 fileName = savedName,
                 platform = media.platform,
                 isMotionPhoto = true,
-                durationMs = savedDuration
+                durationMs = savedDuration,
+                extraPaths = extraPaths
             )
         } else {
             DownloadResult(success = false, platform = media.platform, error = "实况图保存失败")
@@ -1239,16 +1290,22 @@ private const val LINE_BREAK = "\n"
     }
 
     /**
-     * 视频项：直接保存 MP4（不再尝试转成动图）
+     * 视频项：直接保存 MP4（不再尝试转成动图）；拿得到封面时另存一份同序号的 `_NN_cover.*`。
+     * 音乐条目、以及嗅探出纯音频的「视频」条目（抖音图文作品的 item.video 其实是背景音乐）
+     * 都按音频保存成 `…_bgm`，避免产出"黑屏视频"。
+     *
+     * @param withCover 是否另存封面：同一张实况原图已作为图片条目在本批一起下载时传 false，免得存两份
      */
     private fun downloadVideoItem(
         batch: DownloadBatchState,
         media: ParsedMedia,
         url: String,
         index: Int,
-        total: Int
+        total: Int,
+        withCover: Boolean
     ): DownloadResult {
-        val dir = ensureDir(media.platform, batch.subFolder)
+        val dir = workDirOf(batch, media)
+        val base = fileStem(batch, media)
         val tmp = File(context.cacheDir, "cd_video_${System.currentTimeMillis()}_$index.tmp")
 
         val downloadError = downloadToFile(batch, url, tmp, media.originalUrl)
@@ -1263,32 +1320,54 @@ private const val LINE_BREAK = "\n"
             )
         }
 
-        // 抖音图文作品的 item.video 实际是背景音乐（纯音频），
-        // 嗅探文件头识别，按音频保存，避免产出"黑屏视频"；
-        // 解析器明确标记的音乐条目同样按音频扩展名保存
         val sniffed = sniffAudioExt(url, tmp)
-        val (ext, suffix) = when {
-            media.isMusic -> (sniffed ?: "m4a") to ""
-            sniffed != null -> sniffed to "_bgm"
-            else -> "mp4" to ""
+        val isAudio = media.isMusic || sniffed != null
+        val target = if (isAudio) {
+            uniqueFile(dir, base + WorkLayout.BGM_SUFFIX + "." + (sniffed ?: "m4a"))
+        } else {
+            uniqueFile(dir, WorkLayout.numbered(base, media.partNo) + ".mp4")
         }
-        val mp4File = uniqueFile(dir, buildFileName(media, index, total, ext, suffix = suffix))
-        return if (moveFile(tmp, mp4File)) {
-            stampPublishTime(mp4File, media)
-            scanFile(mp4File)
+        return if (moveFile(tmp, target)) {
+            stampPublishTime(target, media)
+            scanFile(target)
+            val coverPath = if (!isAudio && withCover) saveVideoCover(batch, media, dir, base) else null
             DownloadResult(
                 success = true,
-                filePath = mp4File.absolutePath,
-                fileName = mp4File.name,
+                filePath = target.absolutePath,
+                fileName = target.name,
                 platform = media.platform,
                 isMotionPhoto = false,
                 // 探测真实时长：实况图/接口没给时长的视频项，下载后补上，下载栏角标才能显示
-                durationMs = probeMediaDuration(mp4File)
+                durationMs = probeMediaDuration(target),
+                extraPaths = listOfNotNull(coverPath)
             )
         } else {
             tmp.delete()
             return DownloadResult(success = false, platform = media.platform, error = "保存视频文件失败")
         }
+    }
+
+    /** 视频封面：存成与视频同序号的 `_NN_cover.*`，返回落盘路径；拿不到不影响视频本身（返回 null） */
+    private fun saveVideoCover(batch: DownloadBatchState, media: ParsedMedia, dir: File, base: String): String? {
+        val url = media.coverUrl?.takeIf { it.startsWith("http") } ?: return null
+        val tmp = File(context.cacheDir, "cd_cover_${System.currentTimeMillis()}.tmp")
+        val err = if (batch.cancelRequested.get()) "已取消" else downloadToFile(batch, url, tmp, media.originalUrl)
+        if (err != null) {
+            tmp.delete()
+            LogFile.w(TAG, "封面下载失败（不影响视频）：$err")
+            return null
+        }
+        val no = if (media.partNo > 0) media.partNo else 1
+        val target = uniqueFile(
+            dir, WorkLayout.numbered(base, no) + WorkLayout.COVER_SUFFIX + "." + guessImageExt(url, tmp)
+        )
+        if (!moveFile(tmp, target)) {
+            tmp.delete()
+            return null
+        }
+        stampPublishTime(target, media)
+        scanFile(target)
+        return target.absolutePath
     }
 
     /** 用 MediaMetadataRetriever 探测本地媒体真实时长（毫秒），失败返回 0 */
@@ -1363,7 +1442,7 @@ private const val LINE_BREAK = "\n"
         index: Int,
         total: Int
     ): DownloadResult {
-        val dir = ensureDir(media.platform, batch.subFolder)
+        val dir = workDirOf(batch, media)
         val tmp = File(context.cacheDir, "cd_image_${System.currentTimeMillis()}_$index.tmp")
 
         val downloadError = downloadToFile(batch, url, tmp, media.originalUrl)
@@ -1375,7 +1454,11 @@ private const val LINE_BREAK = "\n"
             )
         }
 
-        val imgFile = uniqueFile(dir, buildFileName(media, index, total, guessImageExt(url, tmp)))
+        // 图集各张：`_NN.<ext>`；实况图的静态原图：`_NN_cover.<ext>`（与它的动态视频同序号）
+        val suffix = if (media.livePair) WorkLayout.COVER_SUFFIX else ""
+        val imgFile = uniqueFile(
+            dir, WorkLayout.numbered(fileStem(batch, media), media.partNo) + suffix + "." + guessImageExt(url, tmp)
+        )
         return if (moveFile(tmp, imgFile)) {
             stampPublishTime(imgFile, media)
             scanFile(imgFile)
@@ -1520,22 +1603,53 @@ private const val LINE_BREAK = "\n"
         return dir
     }
 
+    /**
+     * 条目所属作品的目录：<保存路径>/[平台/][博主/]<发布日期>_<文案>_<标识>（排版规则见 [WorkLayout]）；
+     * 覆盖重下且本地已有该作品的作品目录时，用它原来的目录
+     */
+    private fun workDirOf(batch: DownloadBatchState, media: ParsedMedia): File {
+        val token = workMarkerOf(media)
+        val naming = batch.workNamings.getOrPut(token) { namingOf(media, token) }
+        val dir = naming.dir ?: File(ensureDir(media.platform, batch.subFolder), naming.folderName)
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    /** 本地已有文件所在的作品目录（目录名末尾带该作品标识）；旧版平铺文件不在作品目录里，返回 null */
+    private fun existingDirOf(paths: List<String>, token: String): File? =
+        paths.firstNotNullOfOrNull { p ->
+            File(p).parentFile?.takeIf { WorkLayout.tokenOf(it.name) == token }
+        }
+
+    private fun namingOf(media: ParsedMedia, token: String): WorkNaming {
+        val desc = WorkLayout.descOf(media)
+        return WorkNaming(desc, media.publishTimeMs, WorkLayout.folderName(media.publishTimeMs, desc, token))
+    }
+
+    /** 条目文件名主体：`<文案>_<标识>`，文案与目录名里的同一个 */
+    private fun fileStem(batch: DownloadBatchState, media: ParsedMedia): String {
+        val token = workMarkerOf(media)
+        val desc = batch.workNamings.getOrPut(token) { namingOf(media, token) }.desc
+        return WorkLayout.fileBase(desc, token)
+    }
+
     // ==================== 本地已有识别（防重复下载） ====================
 
     /**
-     * 扫描保存目录（含平台/博主子文件夹）里文件名内置的作品标识（_m<hash>_），
-     * 返回 标识 → 已有文件路径列表。这是实际文件的扫描结果，与历史记录无关——
+     * 扫描保存目录（含平台/博主/作品子文件夹）里文件名内置的作品标识，
+     * 返回 标识 → 已有文件路径列表。新版（`…_<标识>_01.jpg`）与旧版平铺
+     * （`…_m<标识>_…`）文件名都认。这是实际文件的扫描结果，与历史记录无关——
      * 记录被删后文件还在就不会重复下载，且能把已有文件带回记录（缩略图/打开）。
      */
     fun existingMarkerFiles(): Map<String, List<String>> {
-        val regex = Regex("_m([0-9a-f]{10})_")
         val found = linkedMapOf<String, MutableList<String>>()
         try {
             val root = File(prefs.getSavePath())
             if (root.exists()) {
-                root.walkTopDown().maxDepth(3).filter { it.isFile }.forEach { f ->
-                    regex.find(f.name)?.let { m ->
-                        found.getOrPut(m.groupValues[1]) { mutableListOf() }.add(f.absolutePath)
+                // 根 / 平台 / 博主 / 作品目录 / 文件，共 4 层
+                root.walkTopDown().maxDepth(4).filter { it.isFile }.forEach { f ->
+                    WorkLayout.tokenOf(f.name)?.let { token ->
+                        found.getOrPut(token) { mutableListOf() }.add(f.absolutePath)
                     }
                 }
             }
@@ -1553,7 +1667,8 @@ private const val LINE_BREAK = "\n"
      * 实况图拆成的「图片+视频」两个条目标识相同，不分类型会让图片条目
      * 拿到视频文件（缩略图显示视频帧、大小/时长角标全带错）；
      * 本条目类型的文件根本不在本地（上次该条目下载失败）时必须返回 null 去补下载；
-     * 图集多张图片同标识时再按文件名里的原始序号 _N_m<hash>_ 配对，否则每个格子都显示同一张。
+     * 新版文件名按序号与 `_cover` 配对（图集多张图片同标识时不能每个格子都显示同一张），
+     * 旧版平铺文件名没有序号，退回按文件名里的批次序号 `_N_m<hash>_` 配对。
      */
     private fun pickExistingFile(
         existing: List<String>,
@@ -1563,15 +1678,22 @@ private const val LINE_BREAK = "\n"
         total: Int
     ): String? {
         val exts = when {
-            media.isMusic -> setOf("m4a", "mp3", "aac", "wav", "flac", "opus")
-            media.videoUrl != null -> setOf("mp4", "mov", "m4v", "webm", "mkv")
-            else -> setOf("jpg", "jpeg", "png", "webp", "gif", "heic")
+            media.isMusic -> WorkLayout.AUDIO_EXTS
+            media.videoUrl != null -> WorkLayout.VIDEO_EXTS
+            else -> WorkLayout.IMAGE_EXTS
         }
         val pool = existing
             .filter { it.substringAfterLast('.', "").lowercase() in exts }
             // 另存重下后本地可能有多份同类型文件，回填一律用时间最新的那份做下载记录
             .sortedByDescending { runCatching { File(it).lastModified() }.getOrDefault(0L) }
         if (pool.isEmpty()) return null
+        pool.firstOrNull { WorkLayout.isItemFile(File(it).name, media) }?.let { return it }
+        // 图片条目：同一个位置的另一种写法（`_01.jpg` / `_01_cover.jpg`）也算已有，
+        // 同一作品从不同入口解析时标法可能不同，不能因此把同一张图再存一份
+        if (media.imageUrl != null && media.videoUrl == null) {
+            pool.firstOrNull { WorkLayout.isItemFile(File(it).name, media, otherImageName = true) }
+                ?.let { return it }
+        }
         if (pool.size > 1 && total > 1) {
             val idxRegex = Regex("_(\\d+)_m${marker}_")
             val byIndex = pool.filter { f ->
@@ -1582,34 +1704,110 @@ private const val LINE_BREAK = "\n"
         return pool.first()
     }
 
-    /** 覆盖模式：删除同作品（同标识）的旧文件，keepPaths 里的是本次刚保存的新文件；
-     *  指向被删旧文件的下载记录一并移除（覆盖旧文件=旧记录自动删除） */
-    private fun deleteOldMarkerFiles(marker: String, keepPaths: List<String>) {
-        val regex = Regex("_m${marker}_")
-        val keep = keepPaths.toHashSet()
+    /**
+     * 覆盖模式收尾（整批顺利结束后调用）：
+     * 1. 本批有新文件落盘的作品，删掉它们其余的同标识旧文件。保留集是本批落盘的全部文件
+     *    （条目主文件 + 封面 + 实况静态图）；旧文件是下载成功之后才删的，失败不动旧文件；
+     * 2. 新文件因为与旧文件同名带了另存后缀 `(1)`，旧文件清掉以后改回干净的名字，
+     *    批量状态与结果里的路径同步更新；
+     * 3. 下载记录同步：指向被删文件的条目从记录里移除，条目去光才整条删。
+     */
+    private fun finishOverwrite(batch: DownloadBatchState, results: MutableList<DownloadResult>) {
+        // 本次真正新落盘的文件（条目主文件 + 封面 + 实况静态图）；整作品纯跳过的不算
+        val newPaths = results.flatMap { r ->
+            if (r.success && !r.skippedExisting) listOfNotNull(r.filePath) + r.extraPaths else emptyList()
+        }
+        val keep = newPaths.toHashSet()
+        // 每个有新文件的作品 → 本次落盘的文件名：替换范围只认这些
+        val freshNames = newPaths.groupBy { WorkLayout.tokenOf(File(it).name).orEmpty() }
+            .filterKeys { it.isNotBlank() }
+        if (freshNames.isEmpty()) return
+
+        val deleted = mutableListOf<String>()
+        freshNames.forEach { (marker, paths) ->
+            deleted += deleteOldMarkerFiles(marker, keep, paths.map { File(it).name })
+        }
+        val restored = mutableListOf<String>()
+        newPaths.mapNotNull { File(it).parentFile }.distinct()
+            .forEach { dir -> restored += tidyDupSuffixes(dir, freshNames.keys, keep, batch, results) }
+        // 改名恢复的路径重新有效，不能从记录里去掉
+        val gone = (deleted - restored.toSet()).toSet()
+        if (gone.isEmpty()) return
+        recordStore.getRecords().forEach { old ->
+            if (old.filePaths.any { it in gone }) recordStore.withoutPaths(old, gone)
+        }
+    }
+
+    /**
+     * 本批新文件因同名带了另存后缀 `(1)`：旧文件清掉以后，后缀对应的名字空出来了就改回去。
+     * 只动保留集里、属于本次有新文件的作品的文件；返回恢复后的路径。
+     */
+    private fun tidyDupSuffixes(
+        dir: File,
+        fresh: Set<String>,
+        keep: Set<String>,
+        batch: DownloadBatchState,
+        results: MutableList<DownloadResult>
+    ): List<String> {
+        val restored = mutableListOf<String>()
+        dir.list()?.forEach { name ->
+            // 同名另存产生的 (1)：旧文件清掉后，去掉后缀的名字空出来了就改回去
+            val clean = WorkLayout.withoutDupSuffix(name) ?: return@forEach
+            val token = WorkLayout.tokenOf(name) ?: return@forEach
+            if (token !in fresh) return@forEach
+            val from = File(dir, name)
+            if (from.absolutePath !in keep) return@forEach
+            val to = File(dir, clean)
+            if (to.exists() || !from.renameTo(to)) return@forEach
+            val fromPath = from.absolutePath
+            val i = batch.itemPaths.indexOf(fromPath)
+            if (i >= 0) batch.itemPaths[i] = to.absolutePath
+            results.indices.forEach { j ->
+                val r = results[j]
+                val isMain = r.filePath == fromPath
+                if (isMain || fromPath in r.extraPaths) {
+                    results[j] = r.copy(
+                        filePath = if (isMain) to.absolutePath else r.filePath,
+                        fileName = if (isMain) to.name else r.fileName,
+                        extraPaths = r.extraPaths.map { if (it == fromPath) to.absolutePath else it }
+                    )
+                }
+            }
+            restored.add(to.absolutePath)
+            LogFile.d(TAG, "覆盖后恢复文件名：$name → ${to.name}")
+        }
+        return restored
+    }
+
+    /**
+     * 删除被本次新文件替换掉的旧文件：同作品（文件名带该标识）、不在保留集里，
+     * 且按 [WorkLayout.isReplacedBy] 的规则属于本次重下了的那个文件。返回删掉的路径。
+     * 作品目录空了就一并删掉（只动带标识的作品目录，不碰平台 / 博主目录）。
+     */
+    private fun deleteOldMarkerFiles(marker: String, keep: Set<String>, newNames: List<String>): List<String> {
         val deleted = mutableListOf<String>()
         try {
-            File(prefs.getSavePath()).walkTopDown().maxDepth(3)
-                .filter { it.isFile && it.absolutePath !in keep && regex.containsMatchIn(it.name) }
+            File(prefs.getSavePath()).walkTopDown().maxDepth(4)
+                .filter {
+                    it.isFile && it.absolutePath !in keep && WorkLayout.tokenOf(it.name) == marker &&
+                        WorkLayout.isReplacedBy(newNames, it.name)
+                }
                 .forEach { f ->
                     if (f.delete()) {
                         deleted.add(f.absolutePath)
                         LogFile.d(TAG, "覆盖旧文件：${f.name}")
+                        val parent = f.parentFile
+                        if (parent != null && WorkLayout.tokenOf(parent.name) == marker &&
+                            parent.list()?.isEmpty() == true
+                        ) {
+                            parent.delete()
+                        }
                     }
                 }
         } catch (e: Exception) {
             LogFile.w(TAG, "覆盖旧文件失败: ${e.message}")
         }
-        if (deleted.isNotEmpty()) {
-            val removed = recordStore.getRecords().filter { r ->
-                deleted.any { d -> r.filePath == d || r.filePaths?.contains(d) == true }
-            }
-            removed.forEach { recordStore.remove(it.batchId) }
-            if (removed.isNotEmpty()) {
-                LogFile.d(TAG, "覆盖后删除旧记录：${removed.size} 条")
-                notifyBatchChanged()
-            }
-        }
+        return deleted
     }
 
     /**
@@ -1703,29 +1901,12 @@ private const val LINE_BREAK = "\n"
         false
     }
 
-    /** 作品的本地去重标识（写入文件名，主页解析前过滤已存在作品也用它） */
+    /** 作品的本地去重标识（写进文件名与目录名，主页解析前过滤已存在作品也用它） */
     fun workMarkerOf(media: ParsedMedia): String =
         java.security.MessageDigest.getInstance("SHA-1")
             .digest(workKeyOf(media).toByteArray())
             .joinToString("") { "%02x".format(it) }
             .take(10)
-
-    private fun buildFileName(
-        media: ParsedMedia,
-        index: Int,
-        total: Int,
-        ext: String,
-        suffix: String = ""
-    ): String {
-        val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-        val base = sanitize(media.title).take(40).ifBlank { media.platform.folderName }
-        val idx = if (total > 1) "_${index + 1}" else ""
-        // 文件名内置作品标识 _m<hash>_（同作品从任何入口下载标识一致），
-        // 时间戳每次不同没关系，本地已有识别只看标识。
-        // 最前面的 yyyyMMdd_ 是作品发布日期（未知则不加）：按文件名排序即按发布时间排序
-        return PublishTime.filePrefix(media.publishTimeMs) +
-            "$base$idx" + "_m${workMarkerOf(media)}" + "_$ts$suffix.$ext"
-    }
 
     private fun sanitize(name: String): String =
         name.replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), "_").trim().trim('.', '_')
